@@ -1,0 +1,13 @@
+[Unit]
+Description=Home Phone Hub Ring Detection Sidecar
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/raspberry/homephone-sidecar.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

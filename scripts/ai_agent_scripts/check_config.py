@@ -1,9 +1,10 @@
+#!/usr/bin/env python3
+"""Print current LIVI config."""
 import json
-d = json.load(open("/home/raspberry/.config/LIVI/config.json"))
-for k in ["projectionWidth","projectionHeight","projectionDpi","projectionFps",
-          "mainScreenWidth","mainScreenHeight","displayMode",
-          "projectionViewAreaTop","projectionViewAreaBottom",
-          "projectionViewAreaLeft","projectionViewAreaRight",
-          "projectionSafeAreaTop","projectionSafeAreaBottom",
-          "projectionSafeAreaLeft","projectionSafeAreaRight"]:
-    print(k, "=", d.get(k))
+with open('/home/raspberry/.config/LIVI/config.json') as f:
+    c = json.load(f)
+print(f"projection: {c['projectionWidth']}x{c['projectionHeight']}")
+print(f"viewArea: L={c.get('projectionViewAreaLeft',0)} R={c.get('projectionViewAreaRight',0)} T={c.get('projectionViewAreaTop',0)} B={c.get('projectionViewAreaBottom',0)}")
+print(f"startPage: {c.get('startPage','home')}")
+print(f"carName: {c.get('carName','unknown')}")
+print(f"kiosk: {c.get('kiosk',{})}")
