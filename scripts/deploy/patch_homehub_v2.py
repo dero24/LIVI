@@ -71,7 +71,7 @@ OVERLAY_SCRIPT = r"""
 // ===== HOME PHONE HUB v2 — MASTER PHONE LAYOUT =====
 (function() {
   'use strict';
-  var SIDECAR_URL = 'http://localhost:8123';
+  var SIDECAR_URL = 'http://127.0.0.1:8123';
   var POLL_INTERVAL = 2000;
   var HUB_HEIGHT = 450;
   var PHONE_HEIGHT = 574;
@@ -84,9 +84,11 @@ OVERLAY_SCRIPT = r"""
   var clockTimer = null;
   var currentDevices = [];
   var masterDeviceId = null;
-  var phoneConnected = false;
+  var phoneConnected = false;   // phone is physically plugged in & projecting
+  var viewingAA = false;        // user is viewing the AA/CarPlay screen (not home)
   var phoneNames = {}; // deviceId -> user-defined name (persisted in localStorage)
   var phoneSlots = {}; // slot number -> deviceId (mapped by dock order)
+  var registrationHandled = {};
 
   // --- Load/save phone names ---
   function loadPhoneNames() {
@@ -157,7 +159,8 @@ OVERLAY_SCRIPT = r"""
     decline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="23" y1="1" x2="1" y2="23"/><path d="M21.21 4.39a19.79 19.79 0 0 0-8.63-3.07A19.5 19.5 0 0 0 6.61 4.39M3.54 7.46a19.79 19.79 0 0 0-3.07 8.67M12 2v4M19 5l-2 2M5 19l-2 2"/></svg>',
     music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
     battery: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>',
-    bolt: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>'
+    bolt: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+    home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>'
   };
 
   // --- Hub Bar (top 424px) ---
@@ -188,6 +191,19 @@ OVERLAY_SCRIPT = r"""
       <style>
         #homehub-bar * { box-sizing: border-box; margin: 0; }
         #homehub-bar { padding: 0; }
+
+        /* When no phone is connected, hide LIVI's built-in UI to prevent
+           the "flash" of LIVI's Home page during unplug transitions.
+           Our full-screen screensaver (z-index 99999) covers everything,
+           but this ensures LIVI's content/nav roots are truly invisible.
+           NOTE: We do NOT hide #projection-root — the AA/CarPlay video canvas
+           must remain visible (just covered by the screensaver) so LIVI's
+           hardware video decoder can render into it. If we hide it with
+           visibility:hidden, the decoder may not produce frames, and when
+           the user taps a phone bubble to reveal AA, the screen will show
+           LIVI's homepage instead of the phone's AA/CarPlay video. */
+        body.homehub-no-phone #content-root { visibility: hidden !important; }
+        body.homehub-no-phone #nav-root { visibility: hidden !important; }
 
         /* Header: Clock + Weather — matches screensaver aesthetic */
         #hub-header {
@@ -396,15 +412,38 @@ OVERLAY_SCRIPT = r"""
         }
       </style>
 
-      <!-- Header: Clock + Weather -->
+      <!-- Header: Clock + Weather + Settings -->
       <div id="hub-header">
         <div>
           <div id="hub-time">--:--</div>
           <div id="hub-date">---</div>
         </div>
-        <div id="hub-weather">
-          <div id="hub-weather-temp">--&deg;</div>
-          <div id="hub-weather-cond"><span id="hub-weather-icon">--</span></div>
+        <div style="display:flex;align-items:flex-start;gap:20px">
+          <div id="hub-weather">
+            <div id="hub-weather-temp">--&deg;</div>
+            <div id="hub-weather-cond"><span id="hub-weather-icon">--</span></div>
+          </div>
+          <div id="hub-home-btn" onclick="homehubGoHome()" style="
+            width:44px;height:44px;border-radius:12px;
+            border:1px solid #21262d;background:rgba(22,27,34,0.6);
+            display:flex;align-items:center;justify-content:center;
+            cursor:pointer;transition:all 0.2s;opacity:0.5;
+          " onmouseover="this.style.opacity=1;this.style.background='rgba(22,27,34,0.9)'"
+            onmouseout="this.style.opacity=0.5;this.style.background='rgba(22,27,34,0.6)'">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          </div>
+          <div id="hub-settings-btn" onclick="homehubOpenSettings()" style="
+            width:44px;height:44px;border-radius:12px;
+            border:1px solid #21262d;background:rgba(22,27,34,0.6);
+            display:flex;align-items:center;justify-content:center;
+            cursor:pointer;transition:all 0.2s;opacity:0.5;
+          " onmouseover="this.style.opacity=1;this.style.background='rgba(22,27,34,0.9)'"
+            onmouseout="this.style.opacity=0.5;this.style.background='rgba(22,27,34,0.6)'">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 1v6m0 10v6m11-11h-6M7 12H1m17.4-7.4l-4.2 4.2M9.8 14.2l-4.2 4.2m12.8 0l-4.2-4.2M9.8 9.8L5.6 5.6"/>
+            </svg>
+          </div>
         </div>
       </div>
 
@@ -473,10 +512,34 @@ OVERLAY_SCRIPT = r"""
           display: flex; align-items: center; gap: 10px;
         }
         #hub-ss-hint svg { width: 22px; height: 22px; }
+        #hub-ss-devices {
+          display: flex; gap: 16px; max-width: calc(100% - 64px);
+          margin-top: 28px; overflow-x: auto; align-items: center;
+        }
+        #hub-ss-devices::-webkit-scrollbar { display: none; }
+        #hub-ss-devices .hub-pill { padding: 16px 32px 16px 16px; min-height: 76px; }
+        #hub-ss-devices .hub-pill-avatar { width: 52px; height: 52px; font-size: 24px; }
+        #hub-ss-devices .hub-pill-name { font-size: 20px; }
+        #hub-ss-settings {
+          position: absolute; top: 24px; right: 24px;
+          width: 44px; height: 44px; border-radius: 12px;
+          border: 1px solid #21262d; background: rgba(22,27,34,0.4);
+          display: flex; align-items: center; justify-content: center;
+          cursor: pointer; transition: all 0.2s; opacity: 0.3;
+        }
+        #hub-ss-settings:hover { opacity: 1; background: rgba(22,27,34,0.8); }
+        #hub-ss-settings:active { transform: scale(0.93); }
       </style>
+      <div id="hub-ss-settings" onclick="homehubOpenSettings()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v6m0 10v6m11-11h-6M7 12H1m17.4-7.4l-4.2 4.2M9.8 14.2l-4.2 4.2m12.8 0l-4.2-4.2M9.8 9.8L5.6 5.6"/>
+        </svg>
+      </div>
       <div id="hub-ss-time">--:--</div>
       <div id="hub-ss-date">---</div>
       <div id="hub-ss-hint">${SVG.phone} Dock a phone to get started</div>
+      <div id="hub-ss-devices"></div>
     `;
 
     document.body.appendChild(screensaverEl);
@@ -831,13 +894,8 @@ OVERLAY_SCRIPT = r"""
   // Bubbles show avatar (first initial), name, and battery.
   // Active phone = blue highlight. Ringing phone = red pulse.
   function renderDevices() {
-    var container = document.getElementById('hub-devices');
-    if (!container) return;
-
-    if (currentDevices.length === 0) {
-      container.innerHTML = '';
-      return;
-    }
+    var containers = [document.getElementById('hub-devices'), document.getElementById('hub-ss-devices')];
+    var hint = document.getElementById('hub-ss-hint');
 
     // Update slot mapping: assign slots based on device list order
     phoneSlots = {};
@@ -860,23 +918,23 @@ OVERLAY_SCRIPT = r"""
     var html = '';
     for (var i = 0; i < currentDevices.length; i++) {
       var d = currentDevices[i];
+      // Only show bubbles for phones that are physically plugged in.
+      // 'active' = projecting AA video, 'available' = plugged in but not yet projecting.
+      // Skip devices with other statuses (disconnected, remembered, etc.)
+      if (d.status !== 'active' && d.status !== 'available') continue;
       var isActive = d.id === masterDeviceId;
       var isRinging = d.id === ringingDeviceId;
       var defaultName = d.name || d.model || 'Phone';
       var name = getPhoneName(d.id, defaultName);
       var initial = name.charAt(0).toUpperCase();
-
-      // Battery info
       var batt = '';
       if (d.batteryLevel !== undefined && d.batteryLevel !== null) {
         var charging = d.batteryCharging ? '<span class="bolt">' + SVG.bolt + '</span>' : '';
         batt = '<span class="hub-pill-batt">' + SVG.battery + ' ' + d.batteryLevel + '%' + charging + '</span>';
       }
-
       var classes = 'hub-pill';
       if (isActive) classes += ' active';
       if (isRinging) classes += ' ringing';
-
       html += '<div class="' + classes + '" data-device-id="' + d.id + '">'
         + '<div class="hub-pill-avatar">' + initial + '</div>'
         + '<div class="hub-pill-text">'
@@ -885,45 +943,96 @@ OVERLAY_SCRIPT = r"""
         + '</div>'
         + '</div>';
     }
-    container.innerHTML = html;
 
-    // Attach click handlers
-    var pills = container.querySelectorAll('.hub-pill[data-device-id]');
-    for (var j = 0; j < pills.length; j++) {
-      (function(pill) {
-        pill.addEventListener('click', function() {
-          var id = pill.getAttribute('data-device-id');
-          if (id && window.projection && window.projection.ipc && window.projection.ipc.selectDevice) {
-            window.projection.ipc.selectDevice(id);
-            masterDeviceId = id;
-            renderDevices();
-          }
-        });
-      })(pills[j]);
+    for (var j = 0; j < containers.length; j++) {
+      var container = containers[j];
+      if (!container) continue;
+      container.innerHTML = html;
+      var pills = container.querySelectorAll('.hub-pill[data-device-id]');
+      for (var k = 0; k < pills.length; k++) {
+        (function(pill) {
+          pill.addEventListener('click', function() {
+            var id = pill.getAttribute('data-device-id');
+            if (id && window.projection && window.projection.ipc && window.projection.ipc.selectDevice) {
+              window.projection.ipc.selectDevice(id);
+              masterDeviceId = id;
+              homeCommandSent = false;
+              sendHomeCommand();
+              showAAView();
+              renderDevices();
+            }
+          });
+        })(pills[k]);
+      }
     }
+
+    if (hint) hint.innerHTML = activeIdx ? SVG.phone + ' Select a phone to open Android Auto or CarPlay' : SVG.phone + ' Dock a phone to get started';
+  }
+
+  // --- View switching: home screen vs AA/CarPlay view ---
+  // showHomeView: cover everything with the screensaver (home screen).
+  //   The phone keeps rendering AA underneath, we just cover it.
+  function showHomeView() {
+    viewingAA = false;
+    if (screensaverEl) {
+      screensaverEl.style.display = 'flex';
+      screensaverEl.style.opacity = '1';
+    }
+    if (barEl) barEl.style.display = 'none';
+    document.body.classList.add('homehub-no-phone');
+  }
+
+  // showAAView: fade screensaver out, show hub bar on top of AA video.
+  function showAAView() {
+    viewingAA = true;
+    if (barEl) barEl.style.display = 'flex';
+    var np = document.getElementById('hub-nowplaying');
+    if (np) np.style.display = 'flex';
+
+    if (screensaverEl) {
+      screensaverEl.style.opacity = '0';
+      setTimeout(function() {
+        if (screensaverEl && !viewingAA) return;
+        if (screensaverEl) screensaverEl.style.display = 'none';
+      }, 450);
+    }
+
+    document.body.classList.remove('homehub-no-phone');
+    pollNowPlaying();
   }
 
   // --- Phone connection state ---
+  // setPhoneConnected: called when a phone physically connects/disconnects.
+  // When connecting, we stay on the home view (user taps bubble to enter AA).
+  // When disconnecting, we ensure the home view is shown.
   function setPhoneConnected(connected) {
     phoneConnected = connected;
 
     if (connected) {
-      // Show hub bar, hide full-screen screensaver (phone video shows through)
-      if (barEl) barEl.style.display = 'flex';
-      if (screensaverEl) screensaverEl.style.display = 'none';
-      var np = document.getElementById('hub-nowplaying');
-      if (np) np.style.display = 'flex';
-      pollNowPlaying();
+      // Phone just connected — stay on home view, show the bubble.
+      // User will tap the bubble to enter AA view.
+      showHomeView();
     } else {
-      // Hide hub bar, show full-screen screensaver
+      // Phone unplugged: IMMEDIATELY cover LIVI's UI to prevent the flash.
+      viewingAA = false;
+      if (screensaverEl) {
+        screensaverEl.style.display = 'flex';
+        screensaverEl.style.opacity = '1';
+      }
       if (barEl) barEl.style.display = 'none';
-      if (screensaverEl) screensaverEl.style.display = 'flex';
+      document.body.classList.add('homehub-no-phone');
+
       // Reset now-playing text
       var titleEl = document.getElementById('hub-np-title');
       var artistEl = document.getElementById('hub-np-artist');
       if (titleEl) titleEl.textContent = 'Nothing playing';
       if (artistEl) artistEl.textContent = 'Connect a phone to start';
     }
+  }
+
+  // Go back to home screen from AA view (home button handler)
+  function homehubGoHome() {
+    showHomeView();
   }
 
   // --- Ring banner (floating, works in both phone-connected and idle states) ---
@@ -933,9 +1042,9 @@ OVERLAY_SCRIPT = r"""
     var ringing = ringState && ringState.ringing;
     if (ringing) {
       ringEl.style.display = 'flex';
-      // Position: when phone connected, show in upper portion of screen.
-      // When no phone, show centered on full-screen screensaver.
-      if (phoneConnected) {
+      // Position: when viewing AA, show in upper portion of screen.
+      // When on home screen, show centered on full-screen screensaver.
+      if (viewingAA) {
         ringEl.style.top = (HUB_HEIGHT - 100) + 'px';
         ringEl.style.transform = 'translateX(-50%)';
       } else {
@@ -1083,6 +1192,14 @@ OVERLAY_SCRIPT = r"""
     return null;
   }
 
+  function isActiveDevice(deviceId) {
+    if (!deviceId) return false;
+    for (var i = 0; i < currentDevices.length; i++) {
+      if (currentDevices[i].id === deviceId && currentDevices[i].status === 'active') return true;
+    }
+    return false;
+  }
+
   // Send 'home' command to AA to leave Maps and go to the phone home screen.
   // Also send 'pause' to stop auto-playing music from the previous session.
   // Delayed slightly to let the AA session fully initialize first.
@@ -1099,28 +1216,29 @@ OVERLAY_SCRIPT = r"""
   }
 
   // Called when a device becomes active. If it's new (not registered),
-  // show the registration prompt and hold off on connecting until done.
+  // show the registration prompt while leaving the home screen visible.
   function handleActiveDevice(active) {
-    if (!active) return;
-    if (masterDeviceId === active.id) return; // Already handling this device
+    if (!active || phoneNames[active.id] || registrationHandled[active.id]) return;
+    registrationHandled[active.id] = true;
+    var defName = active.name || active.model || 'Phone';
+    showRegistrationPrompt(active.id, defName, function() {
+      renderDevices();
+    });
+  }
 
-    masterDeviceId = active.id;
-
-    // Is this phone already registered?
-    if (phoneNames[active.id]) {
-      // Known phone — connect immediately
-      sendHomeCommand();
-      setPhoneConnected(true);
-    } else {
-      // New phone — show registration, keep screensaver visible
-      // Don't call setPhoneConnected(true) yet
-      var defName = active.name || active.model || 'Phone';
-      showRegistrationPrompt(active.id, defName, function() {
-        // Registration complete (saved or skipped) — now connect
-        sendHomeCommand();
-        setPhoneConnected(true);
-      });
+  function updateDeviceState() {
+    var active = getFirstActiveDevice(currentDevices);
+    if (!active) {
+      masterDeviceId = null;
+      homeCommandSent = false;
+      setPhoneConnected(false);
+    } else if (masterDeviceId && !isActiveDevice(masterDeviceId)) {
+      masterDeviceId = null;
+      homeCommandSent = false;
+      setPhoneConnected(false);
     }
+    if (!masterDeviceId && active) handleActiveDevice(active);
+    renderDevices();
   }
 
   function setupDeviceDetection() {
@@ -1133,36 +1251,19 @@ OVERLAY_SCRIPT = r"""
 
       if (type === 'devices' && payload) {
         currentDevices = Array.isArray(payload) ? payload : [];
-        var active = getFirstActiveDevice(currentDevices);
-        if (active) {
-          if (!masterDeviceId || masterDeviceId !== active.id) {
-            handleActiveDevice(active);
-          }
-        } else {
-          masterDeviceId = null;
-          homeCommandSent = false;
-          setPhoneConnected(false);
-        }
-        renderDevices();
+        updateDeviceState();
       } else if (type === 'plugged') {
         homeCommandSent = false;
       } else if (type === 'unplugged' || type === 'failure') {
         homeCommandSent = false;
-        masterDeviceId = null;
         if (window.projection && window.projection.ipc && window.projection.ipc.getDevices) {
           window.projection.ipc.getDevices().then(function(devices) {
             currentDevices = devices || [];
-            var active = getFirstActiveDevice(currentDevices);
-            if (active) {
-              handleActiveDevice(active);
-            } else {
-              setPhoneConnected(false);
-            }
-            renderDevices();
+            updateDeviceState();
           }).catch(function() {});
         } else {
-          setPhoneConnected(false);
-          renderDevices();
+          currentDevices = [];
+          updateDeviceState();
         }
       }
     });
@@ -1172,25 +1273,93 @@ OVERLAY_SCRIPT = r"""
       if (window.projection && window.projection.ipc && window.projection.ipc.getDevices) {
         window.projection.ipc.getDevices().then(function(devices) {
           currentDevices = devices || [];
-          var active = getFirstActiveDevice(currentDevices);
-          if (active) {
-            if (!masterDeviceId || masterDeviceId !== active.id) {
-              handleActiveDevice(active);
-            }
-          } else {
-            if (masterDeviceId) {
-              masterDeviceId = null;
-              homeCommandSent = false;
-              setPhoneConnected(false);
-            }
-          }
-          renderDevices();
+          updateDeviceState();
         }).catch(function() {});
       }
     }
     refreshDevices();
     setInterval(refreshDevices, 3000);
   }
+
+  // --- Settings overlay ---
+  var settingsOverlayEl = null;
+
+  function homehubOpenSettings() {
+    if (settingsOverlayEl) return; // Already open
+    settingsOverlayEl = document.createElement('div');
+    settingsOverlayEl.id = 'homehub-settings-overlay';
+    settingsOverlayEl.style.cssText = [
+      'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0',
+      'z-index:100000',
+      'background:#0d1117',
+      'display:flex', 'flex-direction:column',
+      'opacity:0', 'transition:opacity 300ms ease'
+    ].join(';');
+
+    var loading = document.createElement('div');
+    loading.style.cssText = 'margin:auto;color:#8b949e;font:18px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif';
+    loading.textContent = 'Loading settings...';
+    settingsOverlayEl.appendChild(loading);
+    document.body.appendChild(settingsOverlayEl);
+
+    requestAnimationFrame(function() {
+      settingsOverlayEl.style.opacity = '1';
+    });
+
+    // Use XHR (not fetch) to load the settings HTML — XHR is proven to work
+    // with the sidecar (same mechanism as weather/ring polling). fetch() may
+    // hang under LIVI's COEP (Cross-Origin-Embedder-Policy: require-corp).
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', SIDECAR_URL + '/settings', true);
+    xhr.timeout = 5000;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (!settingsOverlayEl) return;
+      if (xhr.status === 200) {
+        var iframe = document.createElement('iframe');
+        iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%';
+        iframe.setAttribute('allow', 'clipboard-read; clipboard-write');
+        // Use srcdoc so the iframe renders the HTML as an about:blank document
+        // (inherits parent origin — no cross-origin iframe navigation issues).
+        // Inject a <base> tag so relative API calls resolve to the sidecar.
+        iframe.srcdoc = xhr.responseText.replace(/<head([^>]*)>/i, '<head$1><base href="' + SIDECAR_URL + '/">');
+        loading.remove();
+        settingsOverlayEl.appendChild(iframe);
+      } else {
+        loading.textContent = 'Unable to load settings (HTTP ' + xhr.status + ')';
+      }
+    };
+    xhr.onerror = function() {
+      if (settingsOverlayEl) loading.textContent = 'Unable to load settings (network error)';
+    };
+    xhr.ontimeout = function() {
+      if (settingsOverlayEl) loading.textContent = 'Unable to load settings (timeout)';
+    };
+    xhr.send();
+
+    // Listen for close message from the iframe
+    window.addEventListener('message', function(e) {
+      if (e.data === 'close-settings') {
+        homehubCloseSettings();
+      }
+    });
+  }
+
+  function homehubCloseSettings() {
+    if (!settingsOverlayEl) return;
+    settingsOverlayEl.style.opacity = '0';
+    setTimeout(function() {
+      if (settingsOverlayEl) {
+        settingsOverlayEl.remove();
+        settingsOverlayEl = null;
+      }
+    }, 300);
+  }
+
+  // Expose globally so onclick handlers can call it
+  window.homehubOpenSettings = homehubOpenSettings;
+  window.homehubCloseSettings = homehubCloseSettings;
+  window.homehubGoHome = homehubGoHome;
 
   // --- Start ---
   function start() {
