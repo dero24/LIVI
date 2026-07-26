@@ -80,6 +80,7 @@ OVERLAY_SCRIPT = r"""
   var pollTimer = null;
   var barEl = null;
   var screensaverEl = null;
+  var landingEl = null;
   var ringEl = null;
   var clockTimer = null;
   var currentDevices = [];
@@ -94,9 +95,15 @@ OVERLAY_SCRIPT = r"""
   var masterDeviceId = null;
   var phoneConnected = false;   // phone is physically plugged in & projecting
   var viewingAA = false;        // user is viewing the AA/CarPlay screen (not home)
+  var viewingLanding = false;   // user is viewing the phone landing page
   var phoneNames = {}; // deviceId -> user-defined name (persisted in localStorage)
   var phoneSlots = {}; // slot number -> deviceId (mapped by dock order)
   var registrationHandled = {};
+  var appPositions = {}; // deviceId -> { phone:{x,y}, messages:{x,y}, music:{x,y} }
+  var calibrating = false;     // true during calibration flow
+  var calibrationEl = null;    // calibration overlay element
+  var calibrationStep = 0;     // 0=intro, 1=phone, 2=messages, 3=music, 4=done
+  var calibrationData = {};    // collected positions during calibration
 
   // --- Load/save phone names ---
   function loadPhoneNames() {
@@ -113,8 +120,130 @@ OVERLAY_SCRIPT = r"""
     return fallback || 'Phone';
   }
 
+  // --- Load/save app positions (calibration data) ---
+  function loadAppPositions() {
+    try {
+      var saved = localStorage.getItem('homehub.appPositions');
+      if (saved) appPositions = JSON.parse(saved) || {};
+    } catch(e) { appPositions = {}; }
+  }
+  function saveAppPositions() {
+    try { localStorage.setItem('homehub.appPositions', JSON.stringify(appPositions)); } catch(e) {}
+  }
+  function isPhoneCalibrated(deviceId) {
+    var pos = appPositions[deviceId];
+    return pos && pos.phone && pos.messages && pos.music;
+  }
+
   function sendCmd(cmd) {
     try { window.projection && window.projection.ipc && window.projection.ipc.sendCommand(cmd); } catch(e) {}
+  }
+
+  // --- Touch injection ---
+  // AA sends video in canonical 16:9 tiers (800×480, 1280×720, 1920×1080, etc.).
+  // Our display is 600×1024 (portrait). matchFittingAAResolution picks the
+  // smallest tier where the display content fits within 1.2× upscale.
+  // For 600×1024, that's 1920×1080. The 600×1024 content is centered within
+  // the 1920×1080 tier with left/right margins.
+  //
+  // Tier geometry (calculated from matchFittingAAResolution for 600×1024):
+  //   tierW=1920, tierH=1080
+  //   contentW = roundEven(1080 * 600/1024) = 632
+  //   arLeft = floor((1920-632)/2) = 644
+  //   viewAreaTop = 450 (tier pixels, from config)
+  //
+  // Display (600×1024) → Tier (1920×1080) conversion:
+  //   tierX = arLeft + (dispX / 600) * contentW = 644 + dispX * 632/600
+  //   tierY = (dispY / 1024) * 1080
+  //   normX = tierX / 1920
+  //   normY = tierY / 1080
+  var TIER_W = 1920, TIER_H = 1080;
+  var CONTENT_W = 632, AR_LEFT = 644;
+  var VIEW_AREA_TOP = 450;
+
+  // Convert display pixels (0-600, 0-1024) to normalized touch coords (0-1)
+  // relative to the full AA video tier.
+  function displayToTouchNorm(dispX, dispY) {
+    var tierX = AR_LEFT + (dispX / 600) * CONTENT_W;
+    var tierY = (dispY / 1024) * TIER_H;
+    return { x: tierX / TIER_W, y: tierY / TIER_H };
+  }
+
+  // Send a touch event at display coordinates. action: 14=Down, 15=Move, 16=Up
+  function sendTouchEvent(dispX, dispY, action) {
+    try {
+      var ipc = window.projection && window.projection.ipc;
+      if (!ipc || !ipc.sendTouch) return;
+      var n = displayToTouchNorm(dispX, dispY);
+      ipc.sendTouch(n.x, n.y, action);
+    } catch(e) {}
+  }
+
+  // Tap at display coordinates (down + up with 50ms gap)
+  function sendTouchAt(dispX, dispY) {
+    sendTouchEvent(dispX, dispY, 14);  // Down
+    setTimeout(function() {
+      sendTouchEvent(dispX, dispY, 16);  // Up
+    }, 50);
+  }
+
+  // --- Navigate to a specific AA app using recorded touch sequence ---
+  // This runs IN THE BACKGROUND while the landing page is still visible.
+  // The user never sees the AA dashboard or the navigation happening.
+  // onComplete is called after the app should be open, so the caller can
+  // then fade to AA view.
+  function navigateToApp(appName, onComplete) {
+    var pos = appPositions[masterDeviceId] && appPositions[masterDeviceId][appName];
+    if (!pos) {
+      // No calibration for this app — just go to dashboard
+      sendCmd('home');
+      setTimeout(function() { if (onComplete) onComplete(); }, 600);
+      return;
+    }
+    // 1. Go to AA dashboard (resets to top of app grid)
+    sendCmd('home');
+    // 2. Wait for dashboard to render
+    setTimeout(function() {
+      if (pos.sequence && pos.sequence.length > 0) {
+        // Replay the recorded touch sequence (scrolls + tap)
+        replayTouchSequence(pos.sequence, function() {
+          if (onComplete) onComplete();
+        });
+      } else if (pos.x !== undefined && pos.y !== undefined) {
+        // Fallback: just tap the recorded position (no scroll needed)
+        sendTouchAt(pos.x, pos.y);
+        setTimeout(function() {
+          if (onComplete) onComplete();
+        }, 800);
+      } else {
+        if (onComplete) onComplete();
+      }
+    }, 800);
+  }
+
+  // Replay a recorded touch sequence. Each event: { x, y, action, delay }
+  // where x,y are display coordinates, action is 14/15/16, delay is ms
+  // since previous event (capped at 50ms for replay speed).
+  function replayTouchSequence(sequence, onComplete) {
+    var i = 0;
+    function playNext() {
+      if (i >= sequence.length) {
+        setTimeout(function() { if (onComplete) onComplete(); }, 500);
+        return;
+      }
+      var evt = sequence[i];
+      sendTouchEvent(evt.x, evt.y, evt.action);
+      i++;
+      if (i < sequence.length) {
+        var nextDelay = Math.min(sequence[i].delay, 50);
+        if (nextDelay < 10) nextDelay = 10;
+        setTimeout(playNext, nextDelay);
+      } else {
+        // Last event — wait for app to open
+        setTimeout(function() { if (onComplete) onComplete(); }, 800);
+      }
+    }
+    playNext();
   }
 
   // --- Navigate LIVI's React Router to the projection route ('/') ---
@@ -242,7 +371,19 @@ OVERLAY_SCRIPT = r"""
     music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
     battery: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>',
     bolt: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
-    home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>'
+    home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+    // Landing page tiles — stroke-width 1.5 for a lighter, more elegant feel
+    phoneTab: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
+    messages: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    musicTab: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+    apps: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+    // Media transport controls
+    skipBack: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    skipForward: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    playPause: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+    // Notification bell
+    bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
+    arrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>'
   };
 
   // --- Hub Bar (top 424px) ---
@@ -465,6 +606,24 @@ OVERLAY_SCRIPT = r"""
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
 
+        /* Media transport controls — only visible in aa-mode */
+        #hub-np-controls {
+          display: none; align-items: center; gap: 8px; flex-shrink: 0;
+        }
+        #homehub-bar.aa-mode #hub-np-controls { display: flex; }
+        .hub-ctrl-btn {
+          width: 36px; height: 36px; border-radius: 10px;
+          border: none; background: transparent;
+          display: flex; align-items: center; justify-content: center;
+          cursor: pointer; color: #8b949e;
+          transition: all 150ms cubic-bezier(0.4,0,0.2,1);
+        }
+        .hub-ctrl-btn svg { width: 20px; height: 20px; }
+        .hub-ctrl-btn:active { transform: scale(0.88); color: #f0f6fc; }
+        .hub-ctrl-btn:hover { color: #f0f6fc; background: rgba(255,255,255,0.04); }
+        .hub-ctrl-play { width: 44px; height: 44px; border-radius: 12px; }
+        .hub-ctrl-play svg { width: 24px; height: 24px; }
+
         /* Ring Banner */
         #hub-ring {
           display: none;
@@ -621,13 +780,18 @@ OVERLAY_SCRIPT = r"""
         </div>
       </div>
 
-      <!-- Bottom: Now Playing (minimal, no card) -->
+      <!-- Bottom: Now Playing + Media Controls -->
       <div id="hub-bottom">
         <div id="hub-nowplaying">
           <div id="hub-np-icon">${SVG.music}</div>
           <div id="hub-np-info">
             <div id="hub-np-title">Nothing playing</div>
             <div id="hub-np-artist">Connect a phone to start</div>
+          </div>
+          <div id="hub-np-controls">
+            <button class="hub-ctrl-btn" onclick="sendCmd('prev')" aria-label="Previous track">${SVG.skipBack}</button>
+            <button class="hub-ctrl-btn hub-ctrl-play" onclick="sendCmd('playPause')" aria-label="Play/Pause">${SVG.playPause}</button>
+            <button class="hub-ctrl-btn" onclick="sendCmd('next')" aria-label="Next track">${SVG.skipForward}</button>
           </div>
         </div>
       </div>
@@ -769,6 +933,701 @@ OVERLAY_SCRIPT = r"""
     ssPhotoLayerA = document.getElementById('hub-ss-photo-a');
     ssPhotoLayerB = document.getElementById('hub-ss-photo-b');
   }
+
+  // --- Phone Landing Page (bottom 574px, shown when user taps a bubble) ---
+  // Curated quick-action tiles + notification preview. Replaces going
+  // straight to AA's apps grid. User taps a tile → fades to AA → jumps
+  // to that AA tab via keyboard navigation.
+  function createLandingPage() {
+    if (landingEl) return;
+
+    landingEl = document.createElement('div');
+    landingEl.id = 'homehub-landing';
+    landingEl.style.cssText = [
+      'position:fixed',
+      'top:' + HUB_HEIGHT + 'px',
+      'left:0',
+      'right:0',
+      'bottom:0',
+      'z-index:99997',
+      'background:#0d1117',
+      'color:#e6edf3',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif',
+      'display:flex',
+      'flex-direction:column',
+      'overflow:hidden',
+      'pointer-events:none',
+      'opacity:0',
+      'user-select:none',
+      '-webkit-user-select:none',
+      'transition:opacity 400ms cubic-bezier(0.4,0,0.2,1)'
+    ].join(';');
+
+    landingEl.innerHTML = `
+      <style>
+        #homehub-landing * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        #hub-landing-content {
+          flex: 1; display: flex; flex-direction: column;
+          padding: 24px 40px 28px;
+          overflow-y: auto;
+        }
+        #hub-landing-content::-webkit-scrollbar { display: none; }
+
+        /* Tile grid — 2×2, matching the design system */
+        #hub-landing-tiles {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin-bottom: 20px;
+        }
+        .hub-tile {
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 12px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.05);
+          border-radius: 16px;
+          padding: 24px 16px;
+          cursor: pointer;
+          transition: all 250ms cubic-bezier(0.4,0,0.2,1);
+          min-height: 130px;
+          animation: hub-tile-in 400ms cubic-bezier(0.16,1,0.3,1) both;
+        }
+        .hub-tile:nth-child(1) { animation-delay: 0ms; }
+        .hub-tile:nth-child(2) { animation-delay: 60ms; }
+        .hub-tile:nth-child(3) { animation-delay: 120ms; }
+        .hub-tile:nth-child(4) { animation-delay: 180ms; }
+        @keyframes hub-tile-in {
+          from { opacity: 0; transform: translateY(12px) scale(0.96); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .hub-tile:active {
+          transform: scale(0.95);
+          background: rgba(255,255,255,0.06);
+        }
+        .hub-tile svg {
+          width: 40px; height: 40px; color: #8b949e;
+          transition: color 200ms;
+        }
+        .hub-tile:active svg { color: #f0f6fc; }
+        .hub-tile-label {
+          font-size: 20px; font-weight: 400; color: #f0f6fc;
+          letter-spacing: 0.3px;
+        }
+        /* Uncalibrated tiles — dimmed, with setup badge */
+        .hub-tile.uncalibrated {
+          opacity: 0.45;
+        }
+        .hub-tile.uncalibrated:active {
+          opacity: 0.8;
+        }
+        .hub-tile-badge {
+          font-size: 11px; font-weight: 600; color: #58a6ff;
+          text-transform: uppercase; letter-spacing: 1px;
+          margin-top: 4px;
+        }
+        /* Navigating state — tile pulses while AA navigation happens in background */
+        .hub-tile.navigating {
+          animation: hub-tile-pulse 1s ease-in-out infinite;
+        }
+        @keyframes hub-tile-pulse {
+          0%,100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+
+        /* Notification preview area */
+        #hub-landing-notifs {
+          flex: 1; min-height: 0;
+          display: flex; flex-direction: column; gap: 8px;
+        }
+        #hub-landing-notifs-label {
+          font-size: 13px; font-weight: 600; color: #484f58;
+          text-transform: uppercase; letter-spacing: 1.5px;
+          margin-bottom: 4px;
+        }
+        .hub-notif-row {
+          display: flex; align-items: center; gap: 12px;
+          padding: 12px 16px;
+          background: rgba(255,255,255,0.02);
+          border: 1px solid rgba(255,255,255,0.03);
+          border-radius: 12px;
+          cursor: pointer;
+          transition: all 200ms cubic-bezier(0.4,0,0.2,1);
+        }
+        .hub-notif-row:active { transform: scale(0.98); background: rgba(255,255,255,0.05); }
+        .hub-notif-icon {
+          width: 32px; height: 32px; border-radius: 8px;
+          background: rgba(255,255,255,0.06);
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0; color: #8b949e;
+        }
+        .hub-notif-icon svg { width: 18px; height: 18px; }
+        .hub-notif-text {
+          flex: 1; min-width: 0;
+          font-size: 15px; font-weight: 400; color: #8b949e;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .hub-notif-empty {
+          font-size: 15px; font-weight: 300; color: #484f58;
+          padding: 12px 0; text-align: center;
+        }
+
+        /* Full Apps Grid link — tertiary, text only */
+        #hub-landing-apps-link {
+          display: flex; align-items: center; justify-content: center; gap: 8px;
+          padding: 14px;
+          margin-top: 12px;
+          font-size: 16px; font-weight: 400; color: #58a6ff;
+          cursor: pointer;
+          transition: all 200ms cubic-bezier(0.4,0,0.2,1);
+        }
+        #hub-landing-apps-link:active { transform: scale(0.96); }
+        #hub-landing-apps-link svg { width: 18px; height: 18px; }
+      </style>
+      <div id="hub-landing-content">
+        <div id="hub-landing-tiles">
+          <div class="hub-tile" data-app="phone">
+            ${SVG.phoneTab}
+            <div class="hub-tile-label">Phone</div>
+            <div class="hub-tile-badge" style="display:none">Setup needed</div>
+          </div>
+          <div class="hub-tile" data-app="messages">
+            ${SVG.messages}
+            <div class="hub-tile-label">Messages</div>
+            <div class="hub-tile-badge" style="display:none">Setup needed</div>
+          </div>
+          <div class="hub-tile" data-app="music">
+            ${SVG.musicTab}
+            <div class="hub-tile-label">Music</div>
+            <div class="hub-tile-badge" style="display:none">Setup needed</div>
+          </div>
+          <div class="hub-tile" data-app="apps">
+            ${SVG.apps}
+            <div class="hub-tile-label">Apps</div>
+          </div>
+        </div>
+        <div id="hub-landing-notifs">
+          <div id="hub-landing-notifs-label">Recent</div>
+          <div class="hub-notif-empty">No recent notifications</div>
+        </div>
+        <div id="hub-landing-apps-link" onclick="homehubOpenFullApps()">
+          Full Apps Grid
+          ${SVG.arrowRight}
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(landingEl);
+
+    // Wire up tile click handlers
+    var tiles = landingEl.querySelectorAll('.hub-tile[data-app]');
+    for (var i = 0; i < tiles.length; i++) {
+      (function(tile) {
+        tile.addEventListener('click', function() {
+          var app = tile.getAttribute('data-app');
+          if (app === 'apps') {
+            // Apps tile — no calibration needed, just go to AA dashboard
+            tile.classList.add('navigating');
+            sendCmd('home');
+            setTimeout(function() {
+              tile.classList.remove('navigating');
+              showAAView();
+            }, 600);
+            return;
+          }
+          // Check if this app is calibrated
+          var pos = appPositions[masterDeviceId] && appPositions[masterDeviceId][app];
+          if (!pos) {
+            // Not calibrated — start full calibration flow
+            startCalibration(null);
+            return;
+          }
+          // Calibrated — navigate invisibly (landing page stays visible)
+          tile.classList.add('navigating');
+          navigateToApp(app, function() {
+            tile.classList.remove('navigating');
+            showAAView();
+          });
+        });
+      })(tiles[i]);
+    }
+  }
+
+  // Update tile visual state based on calibration
+  function updateLandingTileState() {
+    if (!landingEl) return;
+    var calibrated = isPhoneCalibrated(masterDeviceId);
+    var tiles = landingEl.querySelectorAll('.hub-tile[data-app]');
+    for (var i = 0; i < tiles.length; i++) {
+      var tile = tiles[i];
+      var app = tile.getAttribute('data-app');
+      if (app === 'apps') continue; // Apps tile always works
+      var pos = appPositions[masterDeviceId] && appPositions[masterDeviceId][app];
+      var badge = tile.querySelector('.hub-tile-badge');
+      if (pos) {
+        tile.classList.remove('uncalibrated');
+        if (badge) badge.style.display = 'none';
+      } else {
+        tile.classList.add('uncalibrated');
+        if (badge) badge.style.display = 'block';
+      }
+    }
+  }
+
+  // Open full AA apps grid (sendCmd('home') goes to AA dashboard)
+  function homehubOpenFullApps() {
+    showAAView();
+    sendCmd('home');
+  }
+  window.homehubOpenFullApps = homehubOpenFullApps;
+
+  // --- Calibration Flow ---
+  // First time a phone connects (or when user taps an uncalibrated tile),
+  // we run a quick calibration: show the AA dashboard through a semi-transparent
+  // overlay and ask the user to tap each app (Phone, Messages, Music).
+  // The touch coordinates are recorded and cached in localStorage per device.
+  //
+  // Calibration steps:
+  //   0 = intro screen ("Let's set up quick access")
+  //   1 = "Tap your Phone app"
+  //   2 = "Tap your Messages app"
+  //   3 = "Tap your Music app"
+  //   4 = done → save and go to landing page
+
+  var CALIBRATION_APPS = [
+    { key: 'phone',    label: 'Phone',    icon: SVG.phoneTab },
+    { key: 'messages', label: 'Messages', icon: SVG.messages },
+    { key: 'music',    label: 'Music',    icon: SVG.musicTab }
+  ];
+
+  function startCalibration(specificApp) {
+    // specificApp: if set, only calibrate this one app (user tapped an
+    // uncalibrated tile). If null, calibrate all three.
+    calibrating = true;
+    calibrationStep = 0;
+    calibrationData = {};
+
+    // If only calibrating one app, skip the intro and go straight to that step
+    if (specificApp) {
+      for (var i = 0; i < CALIBRATION_APPS.length; i++) {
+        if (CALIBRATION_APPS[i].key === specificApp) {
+          // Preserve existing positions for other apps
+          var existing = appPositions[masterDeviceId] || {};
+          calibrationData = JSON.parse(JSON.stringify(existing));
+          calibrationStep = i + 1;
+          break;
+        }
+      }
+    }
+
+    showCalibrationOverlay();
+  }
+
+  function showCalibrationOverlay() {
+    if (calibrationEl) calibrationEl.remove();
+
+    calibrationEl = document.createElement('div');
+    calibrationEl.id = 'homehub-calibration';
+    calibrationEl.style.cssText = [
+      'position:fixed',
+      'top:0', 'left:0', 'right:0', 'bottom:0',
+      'z-index:100002',
+      'background:rgba(13,17,23,0.75)',
+      'backdrop-filter:blur(2px)',
+      '-webkit-backdrop-filter:blur(2px)',
+      'color:#e6edf3',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif',
+      'display:flex',
+      'flex-direction:column',
+      'align-items:center',
+      'user-select:none',
+      '-webkit-user-select:none',
+      'opacity:0',
+      'transition:opacity 300ms ease'
+    ].join(';');
+
+    if (calibrationStep === 0) {
+      // Intro screen
+      calibrationEl.innerHTML = `
+        <style>
+          #homehub-calibration * { box-sizing: border-box; margin: 0; padding: 0; }
+          #hub-cal-intro {
+            margin: auto;
+            text-align: center;
+            max-width: 440px;
+            padding: 0 40px;
+          }
+          #hub-cal-intro-icon {
+            width: 80px; height: 80px; margin: 0 auto 24px;
+            color: #58a6ff; opacity: 0.8;
+          }
+          #hub-cal-intro-icon svg { width: 80px; height: 80px; }
+          #hub-cal-intro-title {
+            font-size: 28px; font-weight: 300; color: #f0f6fc;
+            margin-bottom: 12px; letter-spacing: -0.5px;
+          }
+          #hub-cal-intro-sub {
+            font-size: 17px; font-weight: 300; color: #8b949e;
+            line-height: 1.5; margin-bottom: 32px;
+          }
+          #hub-cal-intro-btn {
+            padding: 16px 48px; border-radius: 14px;
+            background: rgba(88,166,255,0.15);
+            border: 1px solid rgba(88,166,255,0.4);
+            color: #58a6ff; font-family: inherit;
+            font-size: 18px; font-weight: 600;
+            cursor: pointer;
+            transition: all 200ms cubic-bezier(0.4,0,0.2,1);
+          }
+          #hub-cal-intro-btn:active { transform: scale(0.96); }
+          #hub-cal-skip {
+            margin-top: 16px;
+            font-size: 15px; color: #484f58;
+            cursor: pointer; background: none; border: none;
+            font-family: inherit;
+          }
+          #hub-cal-skip:hover { color: #8b949e; }
+        </style>
+        <div id="hub-cal-intro">
+          <div id="hub-cal-intro-icon">${SVG.phoneTab}</div>
+          <div id="hub-cal-intro-title">Quick App Setup</div>
+          <div id="hub-cal-intro-sub">
+            Tap each app on your phone's dashboard so the hub can open it
+            directly. This takes about 10 seconds and only needs to be done once.
+          </div>
+          <button id="hub-cal-intro-btn">Get Started</button>
+          <button id="hub-cal-skip">Skip for now</button>
+        </div>
+      `;
+    } else {
+      // App-tapping step
+      var app = CALIBRATION_APPS[calibrationStep - 1];
+      var progress = '';
+      for (var i = 0; i < CALIBRATION_APPS.length; i++) {
+        var done = (i < calibrationStep - 1) ||
+          (calibrationData[CALIBRATION_APPS[i].key] !== undefined);
+        progress += '<div class="hub-cal-dot' + (done ? ' done' : '') +
+          (i === calibrationStep - 1 ? ' current' : '') + '"></div>';
+      }
+
+      calibrationEl.innerHTML = `
+        <style>
+          #homehub-calibration * { box-sizing: border-box; margin: 0; padding: 0; }
+          #hub-cal-header {
+            position: fixed; top: 0; left: 0; right: 0;
+            padding: 40px 40px 20px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(13,17,23,0.9) 0%, rgba(13,17,23,0) 100%);
+            pointer-events: none;
+            z-index: 2;
+          }
+          #hub-cal-instruction {
+            font-size: 24px; font-weight: 400; color: #f0f6fc;
+            margin-bottom: 12px;
+          }
+          #hub-cal-sub {
+            font-size: 15px; font-weight: 300; color: #8b949e;
+          }
+          #hub-cal-progress {
+            display: flex; gap: 8px; justify-content: center;
+            margin-top: 16px;
+          }
+          .hub-cal-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: rgba(255,255,255,0.15);
+            transition: all 200ms;
+          }
+          .hub-cal-dot.done { background: #3fb950; }
+          .hub-cal-dot.current {
+            background: #58a6ff;
+            box-shadow: 0 0 8px rgba(88,166,255,0.5);
+          }
+          #hub-cal-touch-area {
+            position: fixed;
+            top: ${HUB_HEIGHT}px; left: 0; right: 0; bottom: 0;
+            z-index: 1;
+            cursor: crosshair;
+            touch-action: none;
+          }
+          #hub-cal-reticle {
+            position: fixed;
+            width: 60px; height: 60px;
+            border: 2px solid rgba(88,166,255,0.6);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 3;
+            transform: translate(-50%, -50%);
+            display: none;
+            transition: opacity 100ms;
+          }
+          #hub-cal-reticle::after {
+            content: '';
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 6px; height: 6px;
+            background: #58a6ff;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+          }
+          #hub-cal-skip-step {
+            position: fixed; bottom: 24px; right: 24px;
+            font-size: 15px; color: #484f58;
+            cursor: pointer; background: none; border: none;
+            font-family: inherit; z-index: 4;
+          }
+          #hub-cal-skip-step:hover { color: #8b949e; }
+        </style>
+        <div id="hub-cal-header">
+          <div id="hub-cal-instruction">Tap your ${app.label} app</div>
+          <div id="hub-cal-sub">Scroll to find it if needed, then tap the ${app.label} icon</div>
+          <div id="hub-cal-progress">${progress}</div>
+        </div>
+        <div id="hub-cal-touch-area"></div>
+        <div id="hub-cal-reticle"></div>
+        <button id="hub-cal-skip-step">Skip this app</button>
+      `;
+    }
+
+    document.body.appendChild(calibrationEl);
+    requestAnimationFrame(function() {
+      if (calibrationEl) calibrationEl.style.opacity = '1';
+    });
+
+    // Wire up handlers
+    if (calibrationStep === 0) {
+      // Intro screen
+      var startBtn = calibrationEl.querySelector('#hub-cal-intro-btn');
+      var skipBtn = calibrationEl.querySelector('#hub-cal-skip');
+      if (startBtn) startBtn.addEventListener('click', function() {
+        calibrationStep = 1;
+        // Fade to AA dashboard (show AA view, send home)
+        showAAView();
+        sendCmd('home');
+        setTimeout(function() {
+          showCalibrationOverlay();
+        }, 800);
+      });
+      if (skipBtn) skipBtn.addEventListener('click', function() {
+        closeCalibration();
+      });
+    } else {
+      // App-tapping step — user scrolls the AA dashboard to find the app,
+      // then taps it to record its position. Scrolls ARE forwarded to AA
+      // so the dashboard moves, but the final TAP is NOT forwarded — we
+      // just record the coordinates. This keeps the user on the dashboard
+      // so they can calibrate the next app without going back.
+      //
+      // Technique: "deferred down" — we don't send the DOWN event to AA
+      // until we detect movement (>5px). If the user lifts their finger
+      // without significant movement, it was a tap → record only, don't
+      // forward. If they did move, it was a scroll → send the deferred
+      // DOWN at the original position, then all the MOVEs, then the UP.
+      var touchArea = calibrationEl.querySelector('#hub-cal-touch-area');
+      var reticle = calibrationEl.querySelector('#hub-cal-reticle');
+      var skipStepBtn = calibrationEl.querySelector('#hub-cal-skip-step');
+
+      if (touchArea) {
+        // Recording state for this calibration step
+        var stepSequence = [];      // all touch events: {x, y, action, delay}
+        var stepStartTime = 0;
+        var pointerDownPos = null;  // {x, y} display coords of pointerdown
+        var scrolling = false;      // true once we've sent the deferred DOWN
+        var pendingMoves = [];      // moves buffered before deferred DOWN
+        var lastEventTime = 0;
+
+        // Show reticle following finger
+        touchArea.addEventListener('pointermove', function(e) {
+          if (reticle) {
+            reticle.style.display = 'block';
+            reticle.style.left = e.clientX + 'px';
+            reticle.style.top = e.clientY + 'px';
+          }
+        });
+        touchArea.addEventListener('pointerleave', function() {
+          if (reticle) reticle.style.display = 'none';
+        });
+
+        // Pointer down — record but DON'T forward to AA yet (deferred)
+        touchArea.addEventListener('pointerdown', function(e) {
+          e.preventDefault();
+          var dispX = e.clientX;
+          var dispY = e.clientY;
+          pointerDownPos = { x: dispX, y: dispY };
+          scrolling = false;
+          pendingMoves = [];
+          var now = Date.now();
+          if (stepStartTime === 0) stepStartTime = now;
+          var delay = now - (lastEventTime || stepStartTime);
+          lastEventTime = now;
+          // Record in sequence but don't send to AA yet
+          stepSequence.push({ x: dispX, y: dispY, action: 14, delay: delay });
+        });
+
+        // Pointer move — if scrolling, forward to AA; if not yet, check threshold
+        touchArea.addEventListener('pointermove', function(e) {
+          if (!pointerDownPos) return;
+          e.preventDefault();
+          var dispX = e.clientX;
+          var dispY = e.clientY;
+          var dx = dispX - pointerDownPos.x;
+          var dy = dispY - pointerDownPos.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          var now = Date.now();
+          var delay = now - lastEventTime;
+          lastEventTime = now;
+
+          if (!scrolling) {
+            if (dist > 8) {
+              // Movement detected — this is a scroll. Send the deferred DOWN
+              // at the original position, then catch up with buffered moves.
+              scrolling = true;
+              sendTouchEvent(pointerDownPos.x, pointerDownPos.y, 14);
+              // Send any buffered moves
+              for (var i = 0; i < pendingMoves.length; i++) {
+                sendTouchEvent(pendingMoves[i].x, pendingMoves[i].y, 15);
+              }
+              pendingMoves = [];
+            } else {
+              // Not enough movement yet — buffer the move
+              pendingMoves.push({ x: dispX, y: dispY });
+              stepSequence.push({ x: dispX, y: dispY, action: 15, delay: delay });
+              return;
+            }
+          }
+
+          // We're scrolling — forward to AA and record
+          stepSequence.push({ x: dispX, y: dispY, action: 15, delay: delay });
+          sendTouchEvent(dispX, dispY, 15);
+        });
+
+        // Pointer up — check if tap (record only) or scroll (forward UP)
+        touchArea.addEventListener('pointerup', function(e) {
+          if (!pointerDownPos) return;
+          e.preventDefault();
+          var dispX = e.clientX;
+          var dispY = e.clientY;
+          var now = Date.now();
+          var delay = now - lastEventTime;
+          lastEventTime = now;
+
+          var dx = dispX - pointerDownPos.x;
+          var dy = dispY - pointerDownPos.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (scrolling) {
+            // This was a scroll — send UP to AA, record it, keep recording
+            stepSequence.push({ x: dispX, y: dispY, action: 16, delay: delay });
+            sendTouchEvent(dispX, dispY, 16);
+            pointerDownPos = null;
+            scrolling = false;
+            // Don't advance — user is still looking for the app
+          } else if (dist < 15) {
+            // This was a TAP — DON'T forward to AA, just record
+            // Record the UP in the sequence (for replay later)
+            stepSequence.push({ x: dispX, y: dispY, action: 16, delay: delay });
+            // Also remove the DOWN from the sequence since it wasn't a scroll
+            // Actually, keep it — during replay we WANT the tap to be sent.
+            // The sequence now contains: [scrolls...] + [DOWN at tap pos, UP at tap pos]
+            // During replay, this will scroll then tap, opening the app. Perfect.
+
+            var app = CALIBRATION_APPS[calibrationStep - 1];
+            calibrationData[app.key] = {
+              x: dispX, y: dispY,
+              sequence: stepSequence.slice()
+            };
+
+            // Advance to next step
+            calibrationStep++;
+            pointerDownPos = null;
+            if (calibrationStep > CALIBRATION_APPS.length) {
+              finishCalibration();
+            } else {
+              if (reticle) {
+                reticle.style.background = 'rgba(63,185,80,0.3)';
+                reticle.style.borderColor = '#3fb950';
+              }
+              setTimeout(function() {
+                showCalibrationOverlay();
+              }, 400);
+            }
+          } else {
+            // Moved more than 15px but never crossed the scroll threshold
+            // (shouldn't happen, but handle gracefully) — treat as tap
+            stepSequence.push({ x: dispX, y: dispY, action: 16, delay: delay });
+            var app2 = CALIBRATION_APPS[calibrationStep - 1];
+            calibrationData[app2.key] = {
+              x: pointerDownPos.x, y: pointerDownPos.y,
+              sequence: stepSequence.slice()
+            };
+            calibrationStep++;
+            pointerDownPos = null;
+            if (calibrationStep > CALIBRATION_APPS.length) {
+              finishCalibration();
+            } else {
+              setTimeout(function() { showCalibrationOverlay(); }, 400);
+            }
+          }
+        });
+
+        // Handle pointercancel
+        touchArea.addEventListener('pointercancel', function(e) {
+          if (!pointerDownPos) return;
+          if (scrolling) {
+            sendTouchEvent(e.clientX, e.clientY, 16);
+            stepSequence.push({ x: e.clientX, y: e.clientY, action: 16, delay: 0 });
+          }
+          pointerDownPos = null;
+          scrolling = false;
+        });
+      }
+
+      if (skipStepBtn) skipStepBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        calibrationStep++;
+        if (calibrationStep > CALIBRATION_APPS.length) {
+          finishCalibration();
+        } else {
+          showCalibrationOverlay();
+        }
+      });
+    }
+  }
+
+  function finishCalibration() {
+    // Save calibration data
+    if (masterDeviceId) {
+      appPositions[masterDeviceId] = calibrationData;
+      saveAppPositions();
+    }
+    closeCalibration();
+    // Go to landing page
+    showLandingView();
+  }
+
+  function closeCalibration() {
+    calibrating = false;
+    calibrationStep = 0;
+    calibrationData = {};
+    if (calibrationEl) {
+      calibrationEl.style.opacity = '0';
+      var el = calibrationEl;
+      calibrationEl = null;
+      setTimeout(function() { el.remove(); }, 300);
+    }
+  }
+
+  // Re-calibrate: clear cached positions for current phone and restart
+  function homehubRecalibrate() {
+    if (masterDeviceId && appPositions[masterDeviceId]) {
+      delete appPositions[masterDeviceId];
+      saveAppPositions();
+    }
+    // Close settings if open
+    homehubCloseSettings();
+    // Start full calibration
+    startCalibration(null);
+  }
+  window.homehubRecalibrate = homehubRecalibrate;
 
   // --- Photo screensaver (Ken Burns) ---
   // Sidecar serves /photos (list) and /photo/<name> (image, CORP headers set).
@@ -1220,10 +2079,9 @@ OVERLAY_SCRIPT = r"""
             if (id && window.projection && window.projection.ipc && window.projection.ipc.selectDevice) {
               window.projection.ipc.selectDevice(id);
               masterDeviceId = id;
-              // No 'home'/'pause' commands here — those are sent at dock time
-              // (behind the screensaver). The tap must reveal AA exactly as
-              // the user left it, with zero visible flipping.
-              showAAView();
+              // Show the phone landing page instead of going straight to AA.
+              // User picks a tab (Phone/Messages/Music/Apps) from the landing page.
+              showLandingView();
               renderDevices();
             }
           });
@@ -1250,34 +2108,62 @@ OVERLAY_SCRIPT = r"""
   // the transition for an instant cover.
 
   // showHomeView: smooth fade IN of the screensaver (home screen).
-  //   Used by: home button, phone connect. The hub bar stays visible
-  //   behind the fading screensaver and is hidden after the fade completes.
+  //   Used by: home button from landing, phone connect, unplug.
+  //   Hides both landing page and AA view.
   function showHomeView() {
     viewingAA = false;
+    viewingLanding = false;
     if (barEl) barEl.classList.remove('aa-mode');
+    if (landingEl) {
+      landingEl.style.opacity = '0';
+      landingEl.style.pointerEvents = 'none';
+    }
     if (screensaverEl) {
       screensaverEl.style.opacity = '1';
       screensaverEl.style.transform = 'scale(1)';
       screensaverEl.style.pointerEvents = 'auto';
     }
-    // Keep hub bar visible during the fade — it's covered by the
-    // fading-in screensaver. Hide it after the fade completes.
     setTimeout(function() {
-      if (!viewingAA && barEl) barEl.style.display = 'none';
+      if (!viewingAA && !viewingLanding && barEl) barEl.style.display = 'none';
     }, 650);
   }
 
-  // showAAView: smooth fade OUT of the screensaver, revealing AA video.
-  //   Used by: bubble tap. Hub bar is shown immediately so it's revealed
-  //   as the screensaver fades out. The bar compacts (aa-mode) so the
-  //   phone's screen is the star.
-  function showAAView() {
-    viewingAA = true;
-    navToProjection(); // LIVI only shows the projection layer on the '/' route
+  // showLandingView: fade IN the landing page, fade OUT the screensaver.
+  //   Used by: bubble tap. The hub bar is shown in aa-mode (compacted).
+  //   AA video is hidden underneath the landing page.
+  function showLandingView() {
+    viewingAA = false;
+    viewingLanding = true;
+    navToProjection();
     if (barEl) {
       barEl.style.display = 'flex';
       barEl.classList.add('aa-mode');
-      // Replay the gentle entrance animation
+      barEl.classList.remove('bar-reveal');
+      void barEl.offsetHeight;
+      barEl.classList.add('bar-reveal');
+    }
+    if (screensaverEl) {
+      screensaverEl.style.opacity = '0';
+      screensaverEl.style.transform = 'scale(0.98)';
+      screensaverEl.style.pointerEvents = 'none';
+    }
+    if (landingEl) {
+      landingEl.style.opacity = '1';
+      landingEl.style.pointerEvents = 'auto';
+    }
+    updateLandingTileState();
+    pollNowPlaying();
+  }
+
+  // showAAView: fade OUT both screensaver and landing page, revealing AA video.
+  //   Used by: landing tile tap, full apps grid link.
+  function showAAView() {
+    viewingAA = true;
+    viewingLanding = false;
+    navToProjection();
+    if (barEl) {
+      barEl.style.display = 'flex';
+      barEl.classList.add('aa-mode');
       barEl.classList.remove('bar-reveal');
       void barEl.offsetHeight;
       barEl.classList.add('bar-reveal');
@@ -1290,29 +2176,25 @@ OVERLAY_SCRIPT = r"""
       screensaverEl.style.transform = 'scale(0.98)';
       screensaverEl.style.pointerEvents = 'none';
     }
+    if (landingEl) {
+      landingEl.style.opacity = '0';
+      landingEl.style.pointerEvents = 'none';
+    }
 
     pollNowPlaying();
   }
 
   // --- Phone connection state ---
-  // setPhoneConnected: called when a phone physically connects/disconnects.
-  // When connecting, we stay on the home view (user taps bubble to enter AA).
-  // When disconnecting, we cover with the screensaver. LIVI's Home page
-  // is ALWAYS hidden via CSS (visibility:hidden on #content-root, #nav-root),
-  // so even if LIVI switches to its Home page before our handler fires,
-  // it's already invisible — no flash possible.
   function setPhoneConnected(connected) {
     phoneConnected = connected;
 
     if (connected) {
       // Phone just connected — stay on home view, show the bubble.
-      // User will tap the bubble to enter AA view.
       showHomeView();
     } else {
-      // Phone unplugged: cover with screensaver.
-      // LIVI's Home page is already hidden by CSS, so there's no flash
-      // even if LIVI re-renders before this handler fires.
+      // Phone unplugged: cover with screensaver instantly.
       viewingAA = false;
+      viewingLanding = false;
       if (screensaverEl) {
         screensaverEl.style.transition = 'none';
         screensaverEl.style.opacity = '1';
@@ -1321,19 +2203,27 @@ OVERLAY_SCRIPT = r"""
         void screensaverEl.offsetHeight;
         screensaverEl.style.transition = '';
       }
+      if (landingEl) {
+        landingEl.style.opacity = '0';
+        landingEl.style.pointerEvents = 'none';
+      }
       if (barEl) {
         barEl.style.display = 'none';
         barEl.classList.remove('aa-mode');
       }
-
-      // Reset now-playing text
       setNowPlayingText('Nothing playing', 'Connect a phone to start');
     }
   }
 
-  // Go back to home screen from AA view (home button handler)
+  // Home button handler:
+  // - In AA view → go to landing page (phone is still connected)
+  // - In landing view → go to home screen
   function homehubGoHome() {
-    showHomeView();
+    if (viewingAA) {
+      showLandingView();
+    } else {
+      showHomeView();
+    }
   }
 
   // --- Ring banner (floating, works in both phone-connected and idle states) ---
@@ -1352,7 +2242,7 @@ OVERLAY_SCRIPT = r"""
       ringEl.style.display = 'flex';
       // Position: when viewing AA, show in upper portion of screen.
       // When on home screen, show centered on full-screen screensaver.
-      if (viewingAA) {
+      if (viewingAA || viewingLanding) {
         ringEl.style.top = (HUB_HEIGHT - 100) + 'px';
         ringEl.style.transform = 'translateX(-50%)';
       } else {
@@ -1625,6 +2515,80 @@ OVERLAY_SCRIPT = r"""
       'opacity:0', 'transition:opacity 300ms ease'
     ].join(';');
 
+    // Top bar with re-calibrate button (shown above the settings iframe)
+    var topBar = document.createElement('div');
+    topBar.style.cssText = [
+      'display:flex', 'align-items:center', 'justify-content:space-between',
+      'padding:16px 24px',
+      'background:rgba(22,27,34,0.95)',
+      'border-bottom:1px solid #21262d',
+      'flex-shrink:0'
+    ].join(';');
+
+    var title = document.createElement('div');
+    title.style.cssText = 'font-size:18px;font-weight:500;color:#f0f6fc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif';
+    title.textContent = 'Settings';
+    topBar.appendChild(title);
+
+    var btnGroup = document.createElement('div');
+    btnGroup.style.cssText = 'display:flex;gap:12px;align-items:center';
+
+    // Re-calibrate button (only show if a phone is connected)
+    if (phoneConnected) {
+      var recalBtn = document.createElement('button');
+      recalBtn.textContent = 'Re-calibrate Apps';
+      recalBtn.style.cssText = [
+        'padding:10px 20px', 'border-radius:10px',
+        'background:rgba(88,166,255,0.12)',
+        'border:1px solid rgba(88,166,255,0.3)',
+        'color:#58a6ff', 'font-family:inherit',
+        'font-size:14px', 'font-weight:500',
+        'cursor:pointer', 'transition:all 200ms'
+      ].join(';');
+      recalBtn.addEventListener('click', homehubRecalibrate);
+      btnGroup.appendChild(recalBtn);
+
+      // Forget phone button — clears name and calibration
+      var forgetBtn = document.createElement('button');
+      forgetBtn.textContent = 'Forget Phone';
+      forgetBtn.style.cssText = [
+        'padding:10px 20px', 'border-radius:10px',
+        'background:rgba(255,107,107,0.1)',
+        'border:1px solid rgba(255,107,107,0.25)',
+        'color:#ff6b6b', 'font-family:inherit',
+        'font-size:14px', 'font-weight:500',
+        'cursor:pointer', 'transition:all 200ms'
+      ].join(';');
+      forgetBtn.addEventListener('click', function() {
+        if (masterDeviceId) {
+          delete phoneNames[masterDeviceId];
+          delete appPositions[masterDeviceId];
+          savePhoneNames();
+          saveAppPositions();
+        }
+        homehubCloseSettings();
+        showHomeView();
+      });
+      btnGroup.appendChild(forgetBtn);
+    }
+
+    // Close button
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.style.cssText = [
+      'padding:10px 20px', 'border-radius:10px',
+      'background:rgba(255,255,255,0.06)',
+      'border:1px solid rgba(255,255,255,0.1)',
+      'color:#8b949e', 'font-family:inherit',
+      'font-size:14px', 'font-weight:500',
+      'cursor:pointer', 'transition:all 200ms'
+    ].join(';');
+    closeBtn.addEventListener('click', homehubCloseSettings);
+    btnGroup.appendChild(closeBtn);
+
+    topBar.appendChild(btnGroup);
+    settingsOverlayEl.appendChild(topBar);
+
     var loading = document.createElement('div');
     loading.style.cssText = 'margin:auto;color:#8b949e;font:18px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif';
     loading.textContent = 'Loading settings...';
@@ -1693,8 +2657,10 @@ OVERLAY_SCRIPT = r"""
   // --- Start ---
   function start() {
     loadPhoneNames();
+    loadAppPositions();
     createHub();
     createScreensaver();
+    createLandingPage();
     createRingBanner();
     createHealthDot();
     updateClock();
