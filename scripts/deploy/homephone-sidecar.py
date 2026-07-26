@@ -865,6 +865,17 @@ class RingHandler(http.server.BaseHTTPRequestHandler):
             handle_notify(slot, app, title, text)
             self._send_json({'status': 'notified', 'slot': slot})
 
+        elif parsed.path == '/api/dom-dump':
+            # Diagnostic: receive DOM dump from overlay and write to file
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8') if length else ''
+            try:
+                with open('/tmp/homehub_dom_dump.txt', 'w') as f:
+                    f.write(body)
+            except Exception as e:
+                print(f'[sidecar] DOM dump write error: {e}')
+            self._send_json({'status': 'ok'})
+
         # ===== Settings API =====
         elif parsed.path == '/api/audio/default':
             body = self._read_body()

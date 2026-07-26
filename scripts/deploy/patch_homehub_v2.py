@@ -109,6 +109,24 @@ OVERLAY_SCRIPT = r"""
     try { window.projection && window.projection.ipc && window.projection.ipc.sendCommand(cmd); } catch(e) {}
   }
 
+  // --- Navigate LIVI's React Router to the projection route ('/') ---
+  // LIVI only shows #projection-root (visibility/opacity/z-index) and calls
+  // setVisible(true) to unhide the native video plane when pathname === '/'.
+  // LIVI's own Devices page does selectDevice(id) then navigate('/') — we must
+  // do the same or the AA view stays black. LIVI uses a HashRouter, so setting
+  // location.hash triggers navigation; the popstate dispatch is a fallback in
+  // case the hashchange alone is not picked up.
+  function navToProjection() {
+    try {
+      if (window.location.hash !== '#/') {
+        window.location.hash = '#/';
+      }
+      var ev;
+      try { ev = new PopStateEvent('popstate'); } catch(e) { ev = new Event('popstate'); }
+      window.dispatchEvent(ev);
+    } catch(e) {}
+  }
+
   function xhrGet(url, cb) {
     try {
       var x = new XMLHttpRequest();
@@ -192,18 +210,42 @@ OVERLAY_SCRIPT = r"""
         #homehub-bar * { box-sizing: border-box; margin: 0; }
         #homehub-bar { padding: 0; }
 
-        /* When no phone is connected, hide LIVI's built-in UI to prevent
-           the "flash" of LIVI's Home page during unplug transitions.
-           Our full-screen screensaver (z-index 99999) covers everything,
-           but this ensures LIVI's content/nav roots are truly invisible.
-           NOTE: We do NOT hide #projection-root — the AA/CarPlay video canvas
-           must remain visible (just covered by the screensaver) so LIVI's
-           hardware video decoder can render into it. If we hide it with
-           visibility:hidden, the decoder may not produce frames, and when
-           the user taps a phone bubble to reveal AA, the screen will show
-           LIVI's homepage instead of the phone's AA/CarPlay video. */
-        body.homehub-no-phone #content-root { visibility: hidden !important; }
-        body.homehub-no-phone #nav-root { visibility: hidden !important; }
+        /* PERMANENTLY hide LIVI's Home page, nav, and all non-projection UI.
+           #projection-root is a direct child of #content-root (confirmed via
+           DOM dump). We hide all other children of #content-root so LIVI's
+           Home page never shows — preventing the unplug flash. */
+        #content-root > *:not(#projection-root) { display: none !important; }
+        #nav-root { display: none !important; }
+
+        /* Hide LIVI's "waiting for phone" logo/placeholder inside
+           #projection-root. This is the SVG logo that shows when no phone
+           is projecting. It has a 120ms fade-out transition, which causes
+           a logo flash on unplug. By hiding it permanently, the flash is
+           eliminated. The actual AA video is in #videoContainer, not
+           affected by this rule. */
+        #projection-root > .MuiBox-root { display: none !important; }
+
+        /* Force #projection-root to always have a high z-index so AA video
+           appears above our body background. LIVI sets z-index:-1 when not
+           projecting, which puts it below everything. We override it so
+           the video is visible as soon as it starts rendering. */
+        #projection-root { z-index: 999 !important; }
+
+        /* Match background to our screensaver color so empty space behind
+           LIVI's elements is the same dark color.
+           CRITICAL: LIVI renders AA video as a NATIVE UNDERLAY below the
+           web view. When streaming on the '/' route it sets html.show-video,
+           which makes html/body/#root/#main/#videoContainer TRANSPARENT so
+           the video shows through (see src/renderer/index.html). If we
+           force an opaque background here, it paints over the video and the
+           bottom half is black. So only apply when show-video/show-cluster
+           are NOT set. */
+        html:not(.show-video):not(.show-cluster) body,
+        html:not(.show-video):not(.show-cluster) #root,
+        html:not(.show-video):not(.show-cluster) #main,
+        html:not(.show-video):not(.show-cluster) #videoContainer {
+          background: #0d1117 !important;
+        }
 
         /* Header: Clock + Weather — matches screensaver aesthetic */
         #hub-header {
@@ -970,41 +1012,61 @@ OVERLAY_SCRIPT = r"""
   }
 
   // --- View switching: home screen vs AA/CarPlay view ---
-  // showHomeView: cover everything with the screensaver (home screen).
-  //   The phone keeps rendering AA underneath, we just cover it.
+  // KEY DESIGN: The screensaver is ALWAYS display:flex (never display:none).
+  // We toggle visibility with opacity + pointer-events only. This avoids
+  // layout reflows when showing the screensaver, which is critical for the
+  // unplug case — LIVI's React app switches to its Home page before our
+  // event handler fires, so we need the screensaver to cover instantly
+  // in the same frame, with zero reflow delay.
+  //
+  // - opacity:0 + pointer-events:none = invisible, touch passes through to AA
+  // - opacity:1 + pointer-events:auto  = visible, captures touch (home screen)
+  //
+  // The CSS transition (opacity 400ms ease) gives smooth fades for user
+  // actions (home button, bubble tap). For unplug, we temporarily disable
+  // the transition for an instant cover.
+
+  // showHomeView: smooth fade IN of the screensaver (home screen).
+  //   Used by: home button, phone connect. The hub bar stays visible
+  //   behind the fading screensaver and is hidden after the fade completes.
   function showHomeView() {
     viewingAA = false;
     if (screensaverEl) {
-      screensaverEl.style.display = 'flex';
       screensaverEl.style.opacity = '1';
+      screensaverEl.style.pointerEvents = 'auto';
     }
-    if (barEl) barEl.style.display = 'none';
-    document.body.classList.add('homehub-no-phone');
+    // Keep hub bar visible during the fade — it's covered by the
+    // fading-in screensaver. Hide it after the fade completes.
+    setTimeout(function() {
+      if (!viewingAA && barEl) barEl.style.display = 'none';
+    }, 450);
   }
 
-  // showAAView: fade screensaver out, show hub bar on top of AA video.
+  // showAAView: smooth fade OUT of the screensaver, revealing AA video.
+  //   Used by: bubble tap. Hub bar is shown immediately so it's revealed
+  //   as the screensaver fades out.
   function showAAView() {
     viewingAA = true;
+    navToProjection(); // LIVI only shows the projection layer on the '/' route
     if (barEl) barEl.style.display = 'flex';
     var np = document.getElementById('hub-nowplaying');
     if (np) np.style.display = 'flex';
 
     if (screensaverEl) {
       screensaverEl.style.opacity = '0';
-      setTimeout(function() {
-        if (screensaverEl && !viewingAA) return;
-        if (screensaverEl) screensaverEl.style.display = 'none';
-      }, 450);
+      screensaverEl.style.pointerEvents = 'none';
     }
 
-    document.body.classList.remove('homehub-no-phone');
     pollNowPlaying();
   }
 
   // --- Phone connection state ---
   // setPhoneConnected: called when a phone physically connects/disconnects.
   // When connecting, we stay on the home view (user taps bubble to enter AA).
-  // When disconnecting, we ensure the home view is shown.
+  // When disconnecting, we cover with the screensaver. LIVI's Home page
+  // is ALWAYS hidden via CSS (visibility:hidden on #content-root, #nav-root),
+  // so even if LIVI switches to its Home page before our handler fires,
+  // it's already invisible — no flash possible.
   function setPhoneConnected(connected) {
     phoneConnected = connected;
 
@@ -1013,14 +1075,18 @@ OVERLAY_SCRIPT = r"""
       // User will tap the bubble to enter AA view.
       showHomeView();
     } else {
-      // Phone unplugged: IMMEDIATELY cover LIVI's UI to prevent the flash.
+      // Phone unplugged: cover with screensaver.
+      // LIVI's Home page is already hidden by CSS, so there's no flash
+      // even if LIVI re-renders before this handler fires.
       viewingAA = false;
       if (screensaverEl) {
-        screensaverEl.style.display = 'flex';
+        screensaverEl.style.transition = 'none';
         screensaverEl.style.opacity = '1';
+        screensaverEl.style.pointerEvents = 'auto';
+        void screensaverEl.offsetHeight;
+        screensaverEl.style.transition = '';
       }
       if (barEl) barEl.style.display = 'none';
-      document.body.classList.add('homehub-no-phone');
 
       // Reset now-playing text
       var titleEl = document.getElementById('hub-np-title');
@@ -1236,6 +1302,11 @@ OVERLAY_SCRIPT = r"""
       masterDeviceId = null;
       homeCommandSent = false;
       setPhoneConnected(false);
+    } else if (active) {
+      // A phone is projecting: make sure LIVI sits on the '/' route so the
+      // projection layer + native video plane are already live behind the
+      // screensaver when the user taps the bubble.
+      navToProjection();
     }
     if (!masterDeviceId && active) handleActiveDevice(active);
     renderDevices();
