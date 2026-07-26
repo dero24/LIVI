@@ -11,7 +11,7 @@ if r.returncode != 0:
     exit(1)
 
 # Update config
-print("Updating config (projectionViewAreaTop=445)...")
+print("Updating config (projectionViewAreaTop=450)...")
 cfg_path = "/home/raspberry/.config/LIVI/config.json"
 c = json.load(open(cfg_path))
 c["projectionViewAreaTop"] = 450
