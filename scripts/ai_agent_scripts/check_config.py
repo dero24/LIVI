@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Print current LIVI config."""
+"""Check LIVI config for wireless/CarPlay settings."""
 import json
-with open('/home/raspberry/.config/LIVI/config.json') as f:
-    c = json.load(f)
-print(f"projection: {c['projectionWidth']}x{c['projectionHeight']}")
-print(f"viewArea: L={c.get('projectionViewAreaLeft',0)} R={c.get('projectionViewAreaRight',0)} T={c.get('projectionViewAreaTop',0)} B={c.get('projectionViewAreaBottom',0)}")
-print(f"startPage: {c.get('startPage','home')}")
-print(f"carName: {c.get('carName','unknown')}")
-print(f"kiosk: {c.get('kiosk',{})}")
+f = '/home/raspberry/.config/LIVI/config.json'
+c = json.load(open(f))
+fields = [
+    'wirelessAaEnabled', 'wirelessCpEnabled', 'wifiPassword', 'wifiInterface',
+    'wifiType', 'wifiChannel', 'btAdapter', 'dongleToolsIp',
+    'projectionWidth', 'projectionHeight', 'projectionViewAreaTop', 'projectionDpi'
+]
+for k in fields:
+    v = c.get(k)
+    if k == 'wifiPassword' and v:
+        v = '[set]'
+    print(f'{k}: {v}')
