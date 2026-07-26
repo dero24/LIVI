@@ -73,8 +73,8 @@ OVERLAY_SCRIPT = r"""
   'use strict';
   var SIDECAR_URL = 'http://localhost:8123';
   var POLL_INTERVAL = 2000;
-  var HUB_HEIGHT = 445;
-  var PHONE_HEIGHT = 579;
+  var HUB_HEIGHT = 455;
+  var PHONE_HEIGHT = 569;
 
   var ringState = {};
   var pollTimer = null;

@@ -14,7 +14,7 @@ if r.returncode != 0:
 print("Updating config (projectionViewAreaTop=445)...")
 cfg_path = "/home/raspberry/.config/LIVI/config.json"
 c = json.load(open(cfg_path))
-c["projectionViewAreaTop"] = 445
+c["projectionViewAreaTop"] = 450
 json.dump(c, open(cfg_path, "w"), indent=2)
 print(f"  projectionViewAreaTop = {c['projectionViewAreaTop']}")
 

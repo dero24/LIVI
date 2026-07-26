@@ -6,7 +6,9 @@ c = json.load(open(f))
 fields = [
     'wirelessAaEnabled', 'wirelessCpEnabled', 'wifiPassword', 'wifiInterface',
     'wifiType', 'wifiChannel', 'btAdapter', 'dongleToolsIp',
-    'projectionWidth', 'projectionHeight', 'projectionViewAreaTop', 'projectionDpi'
+    'projectionWidth', 'projectionHeight', 'projectionViewAreaTop',
+    'projectionViewAreaBottom', 'projectionViewAreaLeft', 'projectionViewAreaRight',
+    'projectionDpi', 'projectionFps'
 ]
 for k in fields:
     v = c.get(k)
