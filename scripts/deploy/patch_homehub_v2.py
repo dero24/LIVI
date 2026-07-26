@@ -83,6 +83,14 @@ OVERLAY_SCRIPT = r"""
   var ringEl = null;
   var clockTimer = null;
   var currentDevices = [];
+  var lastRenderedHtml = {}; // container id -> html (skip redundant re-renders)
+  var sidecarFailures = 0;   // consecutive /status poll failures
+  var healthDotEl = null;
+  var ssPhotos = [];         // photo screensaver playlist (filenames)
+  var ssPhotoIdx = 0;
+  var ssPhotoLayerA = null;
+  var ssPhotoLayerB = null;
+  var ssPhotoActiveIsA = true;
   var masterDeviceId = null;
   var phoneConnected = false;   // phone is physically plugged in & projecting
   var viewingAA = false;        // user is viewing the AA/CarPlay screen (not home)
@@ -127,20 +135,57 @@ OVERLAY_SCRIPT = r"""
     } catch(e) {}
   }
 
-  function xhrGet(url, cb) {
+  function xhrGet(url, cb, errCb) {
     try {
       var x = new XMLHttpRequest();
       x.open('GET', url, true);
       x.timeout = 3000;
       x.onreadystatechange = function() {
-        if (x.readyState === 4 && x.status === 200) {
-          try { cb(JSON.parse(x.responseText)); } catch(e) {}
+        if (x.readyState === 4) {
+          if (x.status === 200) {
+            try { cb(JSON.parse(x.responseText)); } catch(e) {}
+          } else if (errCb) {
+            errCb();
+          }
         }
       };
-      x.onerror = function() {};
-      x.ontimeout = function() {};
+      x.onerror = function() { if (errCb) errCb(); };
+      x.ontimeout = function() { if (errCb) errCb(); };
       x.send();
-    } catch(e) {}
+    } catch(e) { if (errCb) errCb(); }
+  }
+
+  // --- Sidecar health dot ---
+  // A tiny dot in the bottom-right corner of the screen. Hidden when the
+  // sidecar is healthy. Amber pulse after ~6s of failed polls, red after
+  // ~20s. Honest, not alarming — "I can't reach the alert system."
+  function createHealthDot() {
+    if (healthDotEl) return;
+    var st = document.createElement('style');
+    st.textContent = '@keyframes hub-health-pulse{0%,100%{opacity:0.35}50%{opacity:1}}';
+    document.head.appendChild(st);
+    healthDotEl = document.createElement('div');
+    healthDotEl.id = 'homehub-health';
+    healthDotEl.style.cssText = [
+      'position:fixed', 'right:14px', 'bottom:14px', 'width:10px', 'height:10px',
+      'border-radius:50%', 'z-index:100002', 'display:none', 'pointer-events:none'
+    ].join(';');
+    document.body.appendChild(healthDotEl);
+  }
+
+  function updateHealthDot() {
+    if (!healthDotEl) return;
+    if (sidecarFailures >= 10) {
+      healthDotEl.style.display = 'block';
+      healthDotEl.style.background = '#ff6b6b';
+      healthDotEl.style.animation = 'hub-health-pulse 1.2s ease-in-out infinite';
+    } else if (sidecarFailures >= 3) {
+      healthDotEl.style.display = 'block';
+      healthDotEl.style.background = '#d29922';
+      healthDotEl.style.animation = 'hub-health-pulse 2s ease-in-out infinite';
+    } else {
+      healthDotEl.style.display = 'none';
+    }
   }
 
   function xhrPost(url) {
@@ -150,7 +195,8 @@ OVERLAY_SCRIPT = r"""
   // --- Clock ---
   function updateClock() {
     var now = new Date();
-    var h = now.getHours();
+    var hour24 = now.getHours();
+    var h = hour24;
     var m = now.getMinutes();
     var ampm = h >= 12 ? 'PM' : 'AM';
     h = h % 12 || 12;
@@ -163,10 +209,28 @@ OVERLAY_SCRIPT = r"""
     var dateEl = document.getElementById('hub-date');
     var ssTime = document.getElementById('hub-ss-time');
     var ssDate = document.getElementById('hub-ss-date');
+    var ssGreeting = document.getElementById('hub-ss-greeting');
     if (timeEl) timeEl.textContent = timeStr;
     if (dateEl) dateEl.textContent = dateStr;
     if (ssTime) ssTime.textContent = timeStr + ' ' + ampm;
     if (ssDate) ssDate.textContent = dateStr;
+
+    // Time-based greeting — quiet, human, like the house saying hello
+    if (ssGreeting) {
+      var g = 'Good night';
+      if (hour24 >= 5 && hour24 < 12) g = 'Good morning';
+      else if (hour24 >= 12 && hour24 < 17) g = 'Good afternoon';
+      else if (hour24 >= 17 && hour24 < 22) g = 'Good evening';
+      ssGreeting.textContent = g;
+    }
+
+    // Night mode (22:00 - 07:00): everything whispers — dim clock, no
+    // weather, photos nearly black. Just a clock in the dark.
+    var night = hour24 >= 22 || hour24 < 7;
+    if (document.body) {
+      if (night) document.body.classList.add('hub-night');
+      else document.body.classList.remove('hub-night');
+    }
   }
 
   // --- SVG Icons ---
@@ -291,6 +355,11 @@ OVERLAY_SCRIPT = r"""
           flex-shrink: 0;
           box-sizing: border-box;
           min-height: 88px;
+          animation: hub-pill-in 350ms cubic-bezier(0.16,1,0.3,1) both;
+        }
+        @keyframes hub-pill-in {
+          from { opacity: 0; transform: translateY(10px) scale(0.96); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
         }
         .hub-pill:active { transform: scale(0.96); }
 
@@ -452,6 +521,62 @@ OVERLAY_SCRIPT = r"""
           font-size: 13px; color: #484f58; text-align: center;
           padding: 12px 0;
         }
+
+        /* === Motion: smooth size/padding transitions for mode switches === */
+        #hub-time, #hub-date, #hub-weather-temp, #hub-weather-cond,
+        #hub-np-title, #hub-np-artist, #hub-np-icon,
+        .hub-pill, .hub-pill-avatar, .hub-pill-name {
+          transition: all 400ms cubic-bezier(0.4,0,0.2,1);
+        }
+        #hub-header, #hub-devices-wrap, #hub-bottom {
+          transition: padding 400ms cubic-bezier(0.4,0,0.2,1);
+        }
+        #hub-np-title, #hub-np-artist { transition: opacity 200ms ease-out; }
+
+        /* === AA view mode: the phone is the star, the bar is the stagehand ===
+           Everything in the bar quiets down and compacts so the AA video
+           owns the screen. Now-playing is the one thing we emphasize —
+           it's the most glanceable info while the phone is in use. */
+        #homehub-bar.aa-mode #hub-header { padding: 24px 40px 0; }
+        #homehub-bar.aa-mode #hub-time { font-size: 44px; letter-spacing: -2px; }
+        #homehub-bar.aa-mode #hub-date { font-size: 15px; margin-top: 4px; }
+        #homehub-bar.aa-mode #hub-weather-temp { font-size: 24px; }
+        #homehub-bar.aa-mode #hub-weather-cond { font-size: 12px; }
+        #homehub-bar.aa-mode #hub-devices-wrap { padding: 20px 40px 0; }
+        #homehub-bar.aa-mode .hub-pill {
+          padding: 12px 36px 12px 12px; min-height: 64px; gap: 12px;
+        }
+        #homehub-bar.aa-mode .hub-pill-avatar { width: 44px; height: 44px; font-size: 20px; }
+        #homehub-bar.aa-mode .hub-pill-name { font-size: 18px; }
+        #homehub-bar.aa-mode .hub-pill-batt { font-size: 13px; }
+        #homehub-bar.aa-mode #hub-bottom { align-items: center; padding-bottom: 40px; }
+        #homehub-bar.aa-mode #hub-nowplaying { gap: 16px; }
+        #homehub-bar.aa-mode #hub-np-icon { width: 28px; height: 28px; color: #8b949e; }
+        #homehub-bar.aa-mode #hub-np-title { font-size: 20px; color: #f0f6fc; }
+        #homehub-bar.aa-mode #hub-np-artist { font-size: 15px; color: #8b949e; margin-top: 4px; }
+
+        /* Bar entrance: arrives gently as the screensaver lifts */
+        #homehub-bar.bar-reveal { animation: hub-bar-reveal 500ms cubic-bezier(0.16,1,0.3,1) both; }
+        @keyframes hub-bar-reveal {
+          from { opacity: 0; transform: translateY(-14px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Ambient warm glow across the whole bar while a call rings —
+           "a lamp turning on", not an alarm. (!important beats the inline
+           background on #homehub-bar.) */
+        #homehub-bar.ringing {
+          background: linear-gradient(180deg, rgba(255,107,107,0.12) 0%, rgba(13,17,23,0) 60%) !important;
+          animation: hub-bar-ring-glow 2s ease-in-out infinite;
+        }
+        @keyframes hub-bar-ring-glow {
+          0%,100% { box-shadow: inset 0 0 0 rgba(255,107,107,0); }
+          50% { box-shadow: inset 0 -70px 90px -40px rgba(255,107,107,0.14); }
+        }
+
+        /* Night mode: the bar whispers after dark */
+        body.hub-night #homehub-bar #hub-time { opacity: 0.55; }
+        body.hub-night #homehub-bar #hub-weather { display: none; }
       </style>
 
       <!-- Header: Clock + Weather + Settings -->
@@ -534,27 +659,70 @@ OVERLAY_SCRIPT = r"""
       'pointer-events:auto',
       'user-select:none',
       '-webkit-user-select:none',
-      'transition:opacity 400ms ease'
+      'transition:opacity 600ms cubic-bezier(0.4,0,0.2,1),transform 600ms cubic-bezier(0.4,0,0.2,1)'
     ].join(';');
 
     screensaverEl.innerHTML = `
       <style>
         #homehub-screensaver * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        /* Photo layers — two stacked divs, crossfaded, Ken Burns drift.
+           inset:-4% gives the pan headroom so edges never show. */
+        #hub-ss-photos { position: absolute; inset: 0; overflow: hidden; z-index: 0; }
+        .hub-ss-photo {
+          position: absolute; inset: -4%;
+          background-size: cover; background-position: center;
+          opacity: 0; transition: opacity 2500ms ease;
+          will-change: transform, opacity;
+        }
+        .hub-ss-photo.visible { opacity: 1; }
+        .hub-ss-photo.kb-a { animation: hub-kenburns-a 24s ease-in-out infinite alternate; }
+        .hub-ss-photo.kb-b { animation: hub-kenburns-b 24s ease-in-out infinite alternate; }
+        @keyframes hub-kenburns-a {
+          from { transform: scale(1.02) translate(0, 0); }
+          to   { transform: scale(1.10) translate(-1.5%, -1%); }
+        }
+        @keyframes hub-kenburns-b {
+          from { transform: scale(1.10) translate(1.5%, 1%); }
+          to   { transform: scale(1.02) translate(0, 0); }
+        }
+
+        /* Scrim keeps the clock and pills legible over any photo */
+        #hub-ss-scrim {
+          position: absolute; inset: 0; z-index: 1;
+          background: linear-gradient(180deg,
+            rgba(13,17,23,0.55) 0%,
+            rgba(13,17,23,0.15) 30%,
+            rgba(13,17,23,0.15) 55%,
+            rgba(13,17,23,0.78) 100%);
+          opacity: 0; transition: opacity 1200ms ease;
+        }
+        #homehub-screensaver.has-photos #hub-ss-scrim { opacity: 1; }
+
+        #hub-ss-greeting {
+          position: relative; z-index: 2;
+          font-size: 20px; font-weight: 300; color: #8b949e;
+          letter-spacing: 0.5px; margin-bottom: 16px; min-height: 24px;
+        }
         #hub-ss-time {
+          position: relative; z-index: 2;
           font-size: 120px; font-weight: 200; letter-spacing: -5px; line-height: 1;
           color: #f0f6fc; opacity: 0.95;
         }
         #hub-ss-date {
+          position: relative; z-index: 2;
           font-size: 24px; font-weight: 300; color: #8b949e; margin-top: 16px;
           letter-spacing: 0.5px;
         }
         #hub-ss-hint {
+          position: relative; z-index: 2;
           margin-top: 64px;
-          font-size: 16px; color: #484f58; text-align: center;
+          font-size: 16px; color: #6e7681; text-align: center;
           display: flex; align-items: center; gap: 10px;
         }
         #hub-ss-hint svg { width: 22px; height: 22px; }
         #hub-ss-devices {
+          position: relative; z-index: 2;
           display: flex; gap: 16px; max-width: calc(100% - 64px);
           margin-top: 28px; overflow-x: auto; align-items: center;
         }
@@ -563,7 +731,7 @@ OVERLAY_SCRIPT = r"""
         #hub-ss-devices .hub-pill-avatar { width: 52px; height: 52px; font-size: 24px; }
         #hub-ss-devices .hub-pill-name { font-size: 20px; }
         #hub-ss-settings {
-          position: absolute; top: 24px; right: 24px;
+          position: absolute; top: 24px; right: 24px; z-index: 3;
           width: 44px; height: 44px; border-radius: 12px;
           border: 1px solid #21262d; background: rgba(22,27,34,0.4);
           display: flex; align-items: center; justify-content: center;
@@ -571,13 +739,25 @@ OVERLAY_SCRIPT = r"""
         }
         #hub-ss-settings:hover { opacity: 1; background: rgba(22,27,34,0.8); }
         #hub-ss-settings:active { transform: scale(0.93); }
+
+        /* Night mode: just a dim clock in the dark. Photos nearly black. */
+        body.hub-night #hub-ss-time { opacity: 0.5; }
+        body.hub-night #hub-ss-greeting, body.hub-night #hub-ss-hint { opacity: 0.3; }
+        body.hub-night #hub-ss-photos .hub-ss-photo { filter: brightness(0.45); }
+        body.hub-night #hub-ss-settings { opacity: 0.15; }
       </style>
+      <div id="hub-ss-photos">
+        <div class="hub-ss-photo kb-a" id="hub-ss-photo-a"></div>
+        <div class="hub-ss-photo kb-b" id="hub-ss-photo-b"></div>
+      </div>
+      <div id="hub-ss-scrim"></div>
       <div id="hub-ss-settings" onclick="homehubOpenSettings()">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
           <path d="M12 1v6m0 10v6m11-11h-6M7 12H1m17.4-7.4l-4.2 4.2M9.8 14.2l-4.2 4.2m12.8 0l-4.2-4.2M9.8 9.8L5.6 5.6"/>
         </svg>
       </div>
+      <div id="hub-ss-greeting"></div>
       <div id="hub-ss-time">--:--</div>
       <div id="hub-ss-date">---</div>
       <div id="hub-ss-hint">${SVG.phone} Dock a phone to get started</div>
@@ -585,6 +765,36 @@ OVERLAY_SCRIPT = r"""
     `;
 
     document.body.appendChild(screensaverEl);
+
+    ssPhotoLayerA = document.getElementById('hub-ss-photo-a');
+    ssPhotoLayerB = document.getElementById('hub-ss-photo-b');
+  }
+
+  // --- Photo screensaver (Ken Burns) ---
+  // Sidecar serves /photos (list) and /photo/<name> (image, CORP headers set).
+  // 15s per photo, 2.5s crossfade, endless gentle drift — "like memory,
+  // not a slideshow." With no photos on the Pi, falls back to the dark clock.
+  function refreshPhotos() {
+    xhrGet(SIDECAR_URL + '/photos', function(data) {
+      ssPhotos = (data && data.photos) || [];
+      if (screensaverEl) {
+        if (ssPhotos.length) screensaverEl.classList.add('has-photos');
+        else screensaverEl.classList.remove('has-photos');
+      }
+      if (ssPhotos.length) showNextPhoto();
+    });
+  }
+
+  function showNextPhoto() {
+    if (!ssPhotos.length || !ssPhotoLayerA || !ssPhotoLayerB) return;
+    var incoming = ssPhotoActiveIsA ? ssPhotoLayerB : ssPhotoLayerA;
+    var outgoing = ssPhotoActiveIsA ? ssPhotoLayerA : ssPhotoLayerB;
+    var name = ssPhotos[ssPhotoIdx % ssPhotos.length];
+    ssPhotoIdx++;
+    incoming.style.backgroundImage = 'url(' + SIDECAR_URL + '/photo/' + encodeURIComponent(name) + ')';
+    incoming.classList.add('visible');
+    outgoing.classList.remove('visible');
+    ssPhotoActiveIsA = !ssPhotoActiveIsA;
   }
 
   // --- Ring Banner (separate floating element, works in both states) ---
@@ -608,7 +818,7 @@ OVERLAY_SCRIPT = r"""
       'border-radius:20px',
       'border:1px solid rgba(255,107,107,0.3)',
       'box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 40px rgba(255,107,107,0.1)',
-      'animation:hub-ring-pulse 2s ease-in-out infinite',
+      'animation:hub-ring-arrive 350ms cubic-bezier(0.16,1,0.3,1),hub-ring-pulse 2s ease-in-out 350ms infinite',
       'backdrop-filter:blur(20px)',
       '-webkit-backdrop-filter:blur(20px)',
       'color:#e6edf3',
@@ -623,6 +833,13 @@ OVERLAY_SCRIPT = r"""
         @keyframes hub-ring-pulse {
           0%,100% { border-color: rgba(255,107,107,0.3); box-shadow: 0 8px 32px rgba(0,0,0,0.5),0 0 40px rgba(255,107,107,0.1); }
           50% { border-color: rgba(255,107,107,0.6); box-shadow: 0 8px 32px rgba(0,0,0,0.5),0 0 60px rgba(255,107,107,0.2); }
+        }
+        /* The banner doesn't appear — it ARRIVES, like someone walking in.
+           Uses the "translate" property so it composes with the inline
+           "transform" positioning (translateX/-50%). */
+        @keyframes hub-ring-arrive {
+          from { opacity: 0; translate: 0 16px; }
+          to { opacity: 1; translate: 0 0; }
         }
         #homehub-ring * { box-sizing: border-box; margin: 0; padding: 0; }
         #hub-ring-info {
@@ -989,6 +1206,11 @@ OVERLAY_SCRIPT = r"""
     for (var j = 0; j < containers.length; j++) {
       var container = containers[j];
       if (!container) continue;
+      // Skip the DOM rewrite entirely when nothing changed — this keeps
+      // entrance animations from replaying on every poll and preserves
+      // touch/press state on the pills.
+      if (lastRenderedHtml[container.id] === html) continue;
+      lastRenderedHtml[container.id] = html;
       container.innerHTML = html;
       var pills = container.querySelectorAll('.hub-pill[data-device-id]');
       for (var k = 0; k < pills.length; k++) {
@@ -998,8 +1220,9 @@ OVERLAY_SCRIPT = r"""
             if (id && window.projection && window.projection.ipc && window.projection.ipc.selectDevice) {
               window.projection.ipc.selectDevice(id);
               masterDeviceId = id;
-              homeCommandSent = false;
-              sendHomeCommand();
+              // No 'home'/'pause' commands here — those are sent at dock time
+              // (behind the screensaver). The tap must reveal AA exactly as
+              // the user left it, with zero visible flipping.
               showAAView();
               renderDevices();
             }
@@ -1031,29 +1254,40 @@ OVERLAY_SCRIPT = r"""
   //   behind the fading screensaver and is hidden after the fade completes.
   function showHomeView() {
     viewingAA = false;
+    if (barEl) barEl.classList.remove('aa-mode');
     if (screensaverEl) {
       screensaverEl.style.opacity = '1';
+      screensaverEl.style.transform = 'scale(1)';
       screensaverEl.style.pointerEvents = 'auto';
     }
     // Keep hub bar visible during the fade — it's covered by the
     // fading-in screensaver. Hide it after the fade completes.
     setTimeout(function() {
       if (!viewingAA && barEl) barEl.style.display = 'none';
-    }, 450);
+    }, 650);
   }
 
   // showAAView: smooth fade OUT of the screensaver, revealing AA video.
   //   Used by: bubble tap. Hub bar is shown immediately so it's revealed
-  //   as the screensaver fades out.
+  //   as the screensaver fades out. The bar compacts (aa-mode) so the
+  //   phone's screen is the star.
   function showAAView() {
     viewingAA = true;
     navToProjection(); // LIVI only shows the projection layer on the '/' route
-    if (barEl) barEl.style.display = 'flex';
+    if (barEl) {
+      barEl.style.display = 'flex';
+      barEl.classList.add('aa-mode');
+      // Replay the gentle entrance animation
+      barEl.classList.remove('bar-reveal');
+      void barEl.offsetHeight;
+      barEl.classList.add('bar-reveal');
+    }
     var np = document.getElementById('hub-nowplaying');
     if (np) np.style.display = 'flex';
 
     if (screensaverEl) {
       screensaverEl.style.opacity = '0';
+      screensaverEl.style.transform = 'scale(0.98)';
       screensaverEl.style.pointerEvents = 'none';
     }
 
@@ -1082,17 +1316,18 @@ OVERLAY_SCRIPT = r"""
       if (screensaverEl) {
         screensaverEl.style.transition = 'none';
         screensaverEl.style.opacity = '1';
+        screensaverEl.style.transform = 'scale(1)';
         screensaverEl.style.pointerEvents = 'auto';
         void screensaverEl.offsetHeight;
         screensaverEl.style.transition = '';
       }
-      if (barEl) barEl.style.display = 'none';
+      if (barEl) {
+        barEl.style.display = 'none';
+        barEl.classList.remove('aa-mode');
+      }
 
       // Reset now-playing text
-      var titleEl = document.getElementById('hub-np-title');
-      var artistEl = document.getElementById('hub-np-artist');
-      if (titleEl) titleEl.textContent = 'Nothing playing';
-      if (artistEl) artistEl.textContent = 'Connect a phone to start';
+      setNowPlayingText('Nothing playing', 'Connect a phone to start');
     }
   }
 
@@ -1106,6 +1341,13 @@ OVERLAY_SCRIPT = r"""
     if (!ringEl) return;
 
     var ringing = ringState && ringState.ringing;
+
+    // Ambient warm glow across the whole hub bar while ringing
+    if (barEl) {
+      if (ringing) barEl.classList.add('ringing');
+      else barEl.classList.remove('ringing');
+    }
+
     if (ringing) {
       ringEl.style.display = 'flex';
       // Position: when viewing AA, show in upper portion of screen.
@@ -1169,32 +1411,38 @@ OVERLAY_SCRIPT = r"""
 
   // --- Now Playing: poll LIVI's readMedia() for AA media info ---
   // MediaPayload: { payload: { media: { MediaSongName, MediaArtistName, MediaAPPName, ... } } }
+  // Text updates crossfade (200ms) instead of snapping — calm, not abrupt.
+  function setNowPlayingText(title, artist) {
+    var titleEl = document.getElementById('hub-np-title');
+    var artistEl = document.getElementById('hub-np-artist');
+    if (!titleEl || !artistEl) return;
+    if (titleEl.textContent === title && artistEl.textContent === artist) return;
+    titleEl.style.opacity = '0';
+    artistEl.style.opacity = '0';
+    setTimeout(function() {
+      titleEl.textContent = title;
+      artistEl.textContent = artist;
+      titleEl.style.opacity = '1';
+      artistEl.style.opacity = '1';
+    }, 200);
+  }
+
   function pollNowPlaying() {
     if (!window.projection || !window.projection.ipc || !window.projection.ipc.readMedia) return;
     if (!phoneConnected) return; // No point polling if no phone
 
     window.projection.ipc.readMedia().then(function(data) {
-      var titleEl = document.getElementById('hub-np-title');
-      var artistEl = document.getElementById('hub-np-artist');
-      if (!titleEl || !artistEl) return;
-
       var media = data && data.payload && data.payload.media;
       if (media && media.MediaSongName) {
-        titleEl.textContent = media.MediaSongName;
         var artist = media.MediaArtistName || '';
         var app = media.MediaAPPName || '';
-        if (artist && app) {
-          artistEl.textContent = artist + ' \u00b7 ' + app;
-        } else if (artist) {
-          artistEl.textContent = artist;
-        } else if (app) {
-          artistEl.textContent = app;
-        } else {
-          artistEl.textContent = '';
-        }
+        var sub = '';
+        if (artist && app) sub = artist + ' \u00b7 ' + app;
+        else if (artist) sub = artist;
+        else if (app) sub = app;
+        setNowPlayingText(media.MediaSongName, sub);
       } else {
-        titleEl.textContent = 'Nothing playing';
-        artistEl.textContent = 'Browse apps on your phone';
+        setNowPlayingText('Nothing playing', 'Browse apps on your phone');
       }
     }).catch(function() {});
   }
@@ -1236,6 +1484,12 @@ OVERLAY_SCRIPT = r"""
       } else if (newRinging) {
         updateRingBanner();
       }
+
+      sidecarFailures = 0;
+      updateHealthDot();
+    }, function() {
+      sidecarFailures++;
+      updateHealthDot();
     });
   }
 
@@ -1266,19 +1520,20 @@ OVERLAY_SCRIPT = r"""
     return false;
   }
 
-  // Send 'home' command to AA to leave Maps and go to the phone home screen.
-  // Also send 'pause' to stop auto-playing music from the previous session.
-  // Delayed slightly to let the AA session fully initialize first.
+  // Send 'home' command to AA to leave Maps and go to the launcher, and
+  // 'pause' to stop auto-playing music from the previous session.
+  // IMPORTANT: this is called when the device becomes ACTIVE (dock time),
+  // while the screensaver still covers the screen — never on bubble tap.
+  // Sending these on tap caused a visible dashboard->launcher flip ~2-3s
+  // after the user was already watching, which looked broken.
   var homeCommandSent = false;
   function sendHomeCommand() {
     if (homeCommandSent) return;
     homeCommandSent = true;
-    // Give AA a moment to finish connecting before pressing home
-    setTimeout(function() { sendCmd('home'); }, 2000);
-    // Send pause to stop auto-resumed music
-    setTimeout(function() { sendCmd('pause'); }, 3000);
-    // Send home again after a longer delay in case the first was too early
-    setTimeout(function() { sendCmd('home'); }, 5000);
+    // Give the AA session a moment to finish negotiating before pressing home
+    setTimeout(function() { sendCmd('home'); }, 1500);
+    // Pause any auto-resumed music so the dock stays silent until asked
+    setTimeout(function() { sendCmd('pause'); }, 2500);
   }
 
   // Called when a device becomes active. If it's new (not registered),
@@ -1307,6 +1562,9 @@ OVERLAY_SCRIPT = r"""
       // projection layer + native video plane are already live behind the
       // screensaver when the user taps the bubble.
       navToProjection();
+      // Settle AA onto its launcher + pause autoplay NOW, behind the
+      // screensaver, so the bubble tap reveals a calm, settled screen.
+      sendHomeCommand();
     }
     if (!masterDeviceId && active) handleActiveDevice(active);
     renderDevices();
@@ -1438,15 +1696,21 @@ OVERLAY_SCRIPT = r"""
     createHub();
     createScreensaver();
     createRingBanner();
+    createHealthDot();
     updateClock();
     fetchWeather();
     setupDeviceDetection();
+    refreshPhotos();
 
     // Clock: update every 10s (seconds not shown)
     clockTimer = setInterval(updateClock, 10000);
 
     // Weather: refresh every 10 min
     setInterval(fetchWeather, 600000);
+
+    // Photos: rotate every 15s, re-scan the folder every 10 min
+    setInterval(showNextPhoto, 15000);
+    setInterval(refreshPhotos, 600000);
 
     // Ring status: poll every 2s
     pollTimer = setInterval(pollStatus, 2000);
