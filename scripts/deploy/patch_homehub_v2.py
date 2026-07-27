@@ -96,6 +96,7 @@ OVERLAY_SCRIPT = r"""
   var phoneConnected = false;   // phone is physically plugged in & projecting
   var viewingAA = false;        // user is viewing the AA/CarPlay screen (not home)
   var viewingLanding = false;   // user is viewing the phone landing page
+  var mediaIsPlaying = false;   // tracks AA media play state for play/pause button
   var phoneNames = {}; // deviceId -> user-defined name (persisted in localStorage)
   var phoneSlots = {}; // slot number -> deviceId (mapped by dock order)
   var registrationHandled = {};
@@ -136,8 +137,12 @@ OVERLAY_SCRIPT = r"""
   }
 
   function sendCmd(cmd) {
-    try { window.projection && window.projection.ipc && window.projection.ipc.sendCommand(cmd); } catch(e) {}
+    console.log('[HomeHub] sendCmd:', cmd);
+    try { window.projection && window.projection.ipc && window.projection.ipc.sendCommand(cmd); } catch(e) { console.log('[HomeHub] sendCmd error:', e); }
   }
+  // Expose immediately — don't wait for end of IIFE in case a JS error
+  // prevents execution from reaching the bottom global exports.
+  window.sendCmd = sendCmd;
 
   // --- Touch injection ---
   // AA sends video in canonical 16:9 tiers (800×480, 1280×720, 1920×1080, etc.).
@@ -380,7 +385,8 @@ OVERLAY_SCRIPT = r"""
     // Media transport controls
     skipBack: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     skipForward: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
-    playPause: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+    playIcon: '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+    pauseIcon: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
     // Notification bell
     bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
     arrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>'
@@ -789,15 +795,26 @@ OVERLAY_SCRIPT = r"""
             <div id="hub-np-artist">Connect a phone to start</div>
           </div>
           <div id="hub-np-controls">
-            <button class="hub-ctrl-btn" onclick="sendCmd('prev')" aria-label="Previous track">${SVG.skipBack}</button>
-            <button class="hub-ctrl-btn hub-ctrl-play" onclick="sendCmd('playPause')" aria-label="Play/Pause">${SVG.playPause}</button>
-            <button class="hub-ctrl-btn" onclick="sendCmd('next')" aria-label="Next track">${SVG.skipForward}</button>
+            <button class="hub-ctrl-btn" id="hub-ctrl-prev" aria-label="Previous track">${SVG.skipBack}</button>
+            <button class="hub-ctrl-btn hub-ctrl-play" id="hub-ctrl-play" aria-label="Play/Pause">${SVG.playIcon}</button>
+            <button class="hub-ctrl-btn" id="hub-ctrl-next" aria-label="Next track">${SVG.skipForward}</button>
           </div>
         </div>
       </div>
     `;
 
     document.body.appendChild(barEl);
+
+    // Wire up media controls via addEventListener (inline onclick blocked by CSP)
+    var prevBtn = barEl.querySelector('#hub-ctrl-prev');
+    var playBtn = barEl.querySelector('#hub-ctrl-play');
+    var nextBtn = barEl.querySelector('#hub-ctrl-next');
+    if (prevBtn) prevBtn.addEventListener('click', function() { sendCmd('prev'); });
+    // Play/pause: send 'pause' if currently playing, 'play' if paused/stopped
+    if (playBtn) playBtn.addEventListener('click', function() {
+      sendCmd(mediaIsPlaying ? 'pause' : 'play');
+    });
+    if (nextBtn) nextBtn.addEventListener('click', function() { sendCmd('next'); });
   }
 
   // --- Screensaver (full screen when no phone, hidden when phone connected) ---
@@ -1081,6 +1098,9 @@ OVERLAY_SCRIPT = r"""
           transition: all 200ms cubic-bezier(0.4,0,0.2,1);
         }
         .hub-notif-check:active { transform: scale(0.98); background: rgba(88,166,255,0.1); }
+        .hub-notif-check.navigating {
+          animation: hub-tile-pulse 1s ease-in-out infinite;
+        }
         .hub-notif-check-icon {
           width: 28px; height: 28px; border-radius: 8px;
           background: rgba(88,166,255,0.1);
@@ -1209,21 +1229,34 @@ OVERLAY_SCRIPT = r"""
   // Open AA notifications panel — replays the calibrated touch sequence.
   // Always sends 'home' first to reset to the AA dashboard, so it works
   // even if the user is already on the notifications page (prevents toggle-off).
+  // Follows the same pattern as phone/messages tiles: navigate invisibly
+  // (landing page stays visible), then reveal AA after the panel is open.
   function homehubOpenNotifications() {
     var pos = getNotifsPos();
+    var notifEl = document.getElementById('hub-notif-check-aa');
     if (pos) {
-      showAAView();
-      // 1. Go to AA dashboard (resets to top of app grid)
+      // Add navigating pulse to the notification button
+      if (notifEl) notifEl.classList.add('navigating');
+      // 1. Go to AA dashboard (resets to top of app grid) — landing page stays visible
       sendCmd('home');
       // 2. Wait for dashboard to render, then replay the recorded sequence
       setTimeout(function() {
         if (pos.sequence && pos.sequence.length > 0) {
           replayTouchSequence(pos.sequence, function() {
-            // Notifications panel should now be open
+            // Notifications panel should now be open — reveal AA
+            if (notifEl) notifEl.classList.remove('navigating');
+            showAAView();
           });
         } else if (pos.x !== undefined && pos.y !== undefined) {
           // Fallback: just tap the recorded position
           sendTouchAt(pos.x, pos.y);
+          setTimeout(function() {
+            if (notifEl) notifEl.classList.remove('navigating');
+            showAAView();
+          }, 800);
+        } else {
+          if (notifEl) notifEl.classList.remove('navigating');
+          showAAView();
         }
       }, 800);
     } else {
@@ -2597,24 +2630,50 @@ OVERLAY_SCRIPT = r"""
     }, 200);
   }
 
+  // Update now-playing bar directly from a media object (from 'media' event or readMedia()).
+  // Shared by both the event handler and the polling fallback.
+  function updateNowPlayingFromMedia(media) {
+    if (!media) {
+      setNowPlayingText('Nothing playing', 'Browse apps on your phone');
+      updatePlayPauseIcon(false);
+      return;
+    }
+    if (media.MediaSongName && media.MediaSongName !== '—') {
+      var artist = media.MediaArtistName || '';
+      var app = media.MediaAPPName || '';
+      var sub = '';
+      if (artist && app) sub = artist + ' \u00b7 ' + app;
+      else if (artist) sub = artist;
+      else if (app) sub = app;
+      setNowPlayingText(media.MediaSongName, sub);
+    } else if (media.MediaPlayStatus === 1) {
+      // Playing but no song name — some apps (Sirius) report status but not metadata
+      var app = media.MediaAPPName || '';
+      setNowPlayingText('Playing', app || 'AA Media');
+    } else {
+      setNowPlayingText('Nothing playing', 'Browse apps on your phone');
+    }
+    // Update play/pause icon: show pause icon when playing, play icon when paused/stopped
+    updatePlayPauseIcon(media.MediaPlayStatus === 1);
+  }
+
+  // Toggle play/pause button icon based on playing state.
+  // Also updates mediaIsPlaying so the click handler knows whether to send 'play' or 'pause'.
+  function updatePlayPauseIcon(isPlaying) {
+    mediaIsPlaying = isPlaying;
+    var btn = document.getElementById('hub-ctrl-play');
+    if (!btn) return;
+    btn.innerHTML = isPlaying ? SVG.pauseIcon : SVG.playIcon;
+  }
+
   function pollNowPlaying() {
     if (!window.projection || !window.projection.ipc || !window.projection.ipc.readMedia) return;
     if (!phoneConnected) return; // No point polling if no phone
 
     window.projection.ipc.readMedia().then(function(data) {
       var media = data && data.payload && data.payload.media;
-      if (media && media.MediaSongName) {
-        var artist = media.MediaArtistName || '';
-        var app = media.MediaAPPName || '';
-        var sub = '';
-        if (artist && app) sub = artist + ' \u00b7 ' + app;
-        else if (artist) sub = artist;
-        else if (app) sub = app;
-        setNowPlayingText(media.MediaSongName, sub);
-      } else {
-        setNowPlayingText('Nothing playing', 'Browse apps on your phone');
-      }
-    }).catch(function() {});
+      updateNowPlayingFromMedia(media);
+    }).catch(function(e) { console.log('[HomeHub] readMedia error:', e); });
   }
 
   // --- Poll sidecar for ring status ---
@@ -2845,6 +2904,14 @@ OVERLAY_SCRIPT = r"""
       // Settle AA onto its launcher + pause autoplay NOW, behind the
       // screensaver, so the bubble tap reveals a calm, settled screen.
       sendHomeCommand();
+      // Mark phone as connected so pollNowPlaying() will poll media info.
+      // Only call showHomeView() on the initial connection (when phoneConnected
+      // was false) — not on every device list update, which would disrupt AA viewing.
+      if (!phoneConnected) {
+        setPhoneConnected(true);
+      } else {
+        phoneConnected = true;
+      }
     }
     if (!masterDeviceId && active) handleActiveDevice(active);
     renderDevices();
@@ -2874,6 +2941,18 @@ OVERLAY_SCRIPT = r"""
           currentDevices = [];
           updateDeviceState();
         }
+      } else if (type === 'media') {
+        // 'media' = full snapshot arrived — update now-playing bar directly from payload.
+        // This is the real-time event (no polling delay). Payload shape:
+        // { payload: { media: { MediaSongName, MediaArtistName, MediaAPPName, MediaPlayStatus, ... } } }
+        var mediaPayload = d.payload && d.payload.payload ? d.payload.payload : d.payload;
+        var media = mediaPayload && mediaPayload.media;
+        if (media) {
+          updateNowPlayingFromMedia(media);
+        }
+      } else if (type === 'media-reset') {
+        // State cleared (session switch, phone disconnect) — call readMedia() for fresh state
+        pollNowPlaying();
       }
     });
 
@@ -3060,6 +3139,7 @@ OVERLAY_SCRIPT = r"""
   window.homehubOpenSettings = homehubOpenSettings;
   window.homehubCloseSettings = homehubCloseSettings;
   window.homehubGoHome = homehubGoHome;
+  window.sendCmd = sendCmd;
 
   // --- Start ---
   function start() {
@@ -3090,8 +3170,8 @@ OVERLAY_SCRIPT = r"""
     pollTimer = setInterval(pollStatus, 2000);
     pollStatus();
 
-    // Now playing: poll every 5s (only when phone connected)
-    setInterval(pollNowPlaying, 5000);
+    // Now playing: poll every 3s as fallback (media events handle real-time updates)
+    setInterval(pollNowPlaying, 3000);
 
     console.log('[HomeHub v2] Master Phone Layout started');
   }

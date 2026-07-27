@@ -1,0 +1,19 @@
+# Installed by LIVI — lets raspberry manage the WiFi AP for wireless AA/CP.
+# Remove this file to revoke.
+Cmnd_Alias LIVI_WIFI = /usr/sbin/hostapd /tmp/livi-hostapd.conf, \
+                       /usr/sbin/dnsmasq *, \
+                       /usr/bin/pkill dnsmasq, \
+                       /usr/sbin/iw reg set *, \
+                       /usr/sbin/ip link set *, \
+                       /usr/sbin/ip addr flush *, \
+                       /usr/sbin/ip addr add *, \
+                       /usr/bin/systemctl stop wpa_supplicant@*, \
+                       /usr/bin/systemctl stop dnsmasq, \
+                       /usr/bin/nmcli connection reload, \
+                       /usr/bin/nmcli device set *, \
+                       /usr/bin/nmcli device disconnect *, \
+                       /usr/sbin/rfkill unblock wifi, \
+                       /usr/bin/install -m 600 -o root -g root *, \
+                       /usr/bin/firewall-cmd *, \
+                       /usr/sbin/hostapd_cli *
+raspberry ALL=(root) NOPASSWD: LIVI_WIFI

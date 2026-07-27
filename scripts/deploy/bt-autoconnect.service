@@ -1,0 +1,12 @@
+[Unit]
+Description=Bluetooth Auto-Connect (auto-connect to trusted phones)
+After=bluetooth-agent.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/raspberry/bt_autoconnect.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
