@@ -53,6 +53,27 @@ WEATHER_CACHE_TTL = 1800  # 30 minutes
 WEATHER_LAT = None  # Set via IP geolocation
 WEATHER_LON = None
 
+# ===== Companion App State (v0.4 — unified endpoints) =====
+# media_state: last media snapshot reported by the Android companion app.
+# Overlay prefers this over LIVI readMedia() when fresh (within MEDIA_TTL_SECONDS).
+# Shape: {title, artist, album, app, playing, duration_ms, position_ms, source, reported_at}
+#   or None when no companion app has reported (or it has gone stale).
+media_state = None
+media_lock = threading.Lock()
+MEDIA_TTL_SECONDS = 15  # companion media is stale after 15s without an update
+
+# notifications: active notifications from Android companion app OR ANCS listener (iPhone).
+# Each entry: {id, title, text, app, platform, posted_at}
+notifications = []
+notif_lock = threading.Lock()
+NOTIF_MAX_AGE_SECONDS = 1800  # 30 min — auto-expire stale notifications
+NOTIF_MAX_COUNT = 20  # cap to prevent unbounded growth
+
+# dock_state: phones currently docked (reported by companion app / Shortcuts).
+# mac -> {name, platform, docked_at}
+dock_state = {}
+dock_lock = threading.Lock()
+
 
 def get_location():
     """Get approximate location via IP geolocation."""
@@ -228,6 +249,217 @@ def handle_notify(slot, app, title, text):
         'text': text or '',
         'timestamp': time.time()
     })
+
+
+# ===== Companion App handlers (v0.4 — unified endpoints) =====
+
+def handle_media_post(body):
+    """Store media state reported by the Android companion app.
+
+    Body shape (all fields optional except nothing — empty body clears state):
+      { title, artist, album, app, playing, duration_ms, position_ms }
+    An empty body or {"playing": false, "clear": true} clears the state so the
+    overlay falls back to LIVI readMedia().
+    """
+    global media_state
+    if not body or body.get('clear'):
+        with media_lock:
+            if media_state is not None:
+                print('[sidecar] MEDIA cleared (companion)')
+            media_state = None
+        push_telemetry({'type': 'media-reset', 'source': 'companion', 'timestamp': time.time()})
+        return {'status': 'ok', 'media': None}
+
+    with media_lock:
+        media_state = {
+            'title': body.get('title', ''),
+            'artist': body.get('artist', ''),
+            'album': body.get('album', ''),
+            'app': body.get('app', ''),
+            'playing': bool(body.get('playing', False)),
+            'duration_ms': body.get('duration_ms'),
+            'position_ms': body.get('position_ms'),
+            'source': 'companion',
+            'reported_at': time.time(),
+        }
+    print(f'[sidecar] MEDIA {media_state["app"]}: {media_state["title"]} — {media_state["artist"]} (playing={media_state["playing"]})')
+    push_telemetry({
+        'type': 'media',
+        'source': 'companion',
+        'payload': {k: v for k, v in media_state.items() if k != 'reported_at'},
+        'timestamp': time.time(),
+    })
+    return {'status': 'ok', 'media': {k: v for k, v in media_state.items() if k != 'reported_at'}}
+
+
+def get_companion_media():
+    """Return fresh companion media state, or None if stale/absent.
+
+    The overlay should call this via /status and prefer it over LIVI readMedia()
+    when non-None. Stale = no companion update within MEDIA_TTL_SECONDS.
+    """
+    with media_lock:
+        if media_state is None:
+            return None
+        age = time.time() - media_state.get('reported_at', 0)
+        if age > MEDIA_TTL_SECONDS:
+            return None
+        return {k: v for k, v in media_state.items() if k != 'reported_at'}
+
+
+def prune_notifications():
+    """Remove expired notifications and enforce the max count. Called under notif_lock."""
+    now = time.time()
+    # Drop expired
+    fresh = [n for n in notifications if (now - n.get('posted_at', 0)) < NOTIF_MAX_AGE_SECONDS]
+    # Enforce max count (keep most recent)
+    if len(fresh) > NOTIF_MAX_COUNT:
+        fresh = sorted(fresh, key=lambda n: n.get('posted_at', 0), reverse=True)[:NOTIF_MAX_COUNT]
+    notifications[:] = fresh
+
+
+def handle_notif_post(body):
+    """Add / update / remove / clear notifications from companion app or ANCS.
+
+    Body shapes:
+      {"action": "add", "id": "...", "title": "...", "text": "...", "app": "...", "platform": "android|iphone"}
+      {"action": "remove", "id": "..."}
+      {"action": "clear", "platform": "android"}  (platform optional)
+    Default action is "add" for backward compatibility.
+    """
+    if not body:
+        return {'error': 'body required'}, 400
+
+    action = body.get('action', 'add')
+    platform = body.get('platform', 'android')
+
+    if action == 'clear':
+        with notif_lock:
+            if body.get('platform'):
+                before = len(notifications)
+                notifications[:] = [n for n in notifications if n.get('platform') != platform]
+                pruned = before - len(notifications)
+            else:
+                pruned = len(notifications)
+                notifications.clear()
+        print(f'[sidecar] NOTIFS cleared ({pruned} removed, platform={platform if body.get("platform") else "all"})')
+        push_telemetry({'type': 'notifs-clear', 'platform': platform if body.get('platform') else 'all', 'timestamp': time.time()})
+        return {'status': 'ok', 'cleared': pruned}
+
+    if action == 'remove':
+        nid = body.get('id')
+        if not nid:
+            return {'error': 'id required for remove'}, 400
+        with notif_lock:
+            before = len(notifications)
+            notifications[:] = [n for n in notifications if n.get('id') != nid]
+            removed = before - len(notifications)
+        if removed:
+            print(f'[sidecar] NOTIF removed id={nid}')
+            push_telemetry({'type': 'notif-remove', 'id': nid, 'timestamp': time.time()})
+        return {'status': 'ok', 'removed': removed}
+
+    # action == "add" (default)
+    nid = body.get('id') or f'{body.get("app", "unknown")}:{body.get("title", "")}:{int(time.time()*1000)}'
+    entry = {
+        'id': nid,
+        'title': body.get('title', ''),
+        'text': body.get('text', ''),
+        'app': body.get('app', ''),
+        'platform': platform,
+        'posted_at': time.time(),
+    }
+    with notif_lock:
+        # Update if same id exists, else append
+        for i, n in enumerate(notifications):
+            if n.get('id') == nid:
+                entry['posted_at'] = n.get('posted_at', entry['posted_at'])
+                notifications[i] = entry
+                break
+        else:
+            notifications.append(entry)
+        prune_notifications()
+        count = len(notifications)
+    print(f'[sidecar] NOTIF [{platform}] {entry["app"]}: {entry["title"]} (total={count})')
+    push_telemetry({
+        'type': 'notif',
+        'id': nid,
+        'title': entry['title'],
+        'text': entry['text'],
+        'app': entry['app'],
+        'platform': platform,
+        'timestamp': entry['posted_at'],
+    })
+    return {'status': 'ok', 'notification': {k: v for k, v in entry.items()}}
+
+
+def get_notifications():
+    """Return a snapshot of active notifications (newest first)."""
+    with notif_lock:
+        prune_notifications()
+        # Return a copy, newest first
+        return sorted(
+            [{k: v for k, v in n.items()} for n in notifications],
+            key=lambda n: n.get('posted_at', 0),
+            reverse=True,
+        )
+
+
+def handle_dock_post(body):
+    """Phone docking — record state and trigger BT connect.
+
+    Body: {"mac": "xx:xx:xx:xx", "name": "S22 Ultra", "platform": "android|iphone"}
+    """
+    if not body or not body.get('mac'):
+        return {'error': 'mac required'}, 400
+    mac = body['mac']
+    name = body.get('name', 'Unknown')
+    platform = body.get('platform', 'android')
+    with dock_lock:
+        dock_state[mac] = {'name': name, 'platform': platform, 'docked_at': time.time()}
+    print(f'[sidecar] DOCK {name} ({mac}) platform={platform}')
+    # Trigger BT connect (reuses existing helper)
+    result = bt_connect(mac)
+    push_telemetry({
+        'type': 'dock',
+        'mac': mac,
+        'name': name,
+        'platform': platform,
+        'bt_result': result,
+        'timestamp': time.time(),
+    })
+    return {'status': 'ok', 'mac': mac, 'name': name, 'bt_result': result}
+
+
+def handle_undock_post(body):
+    """Phone undocking — record state and disconnect BT.
+
+    Body: {"mac": "xx:xx:xx:xx", "platform": "android|iphone"}
+    """
+    if not body or not body.get('mac'):
+        return {'error': 'mac required'}, 400
+    mac = body['mac']
+    with dock_lock:
+        info = dock_state.pop(mac, None)
+    name = info.get('name', 'Unknown') if info else 'Unknown'
+    platform = body.get('platform', info.get('platform', 'android') if info else 'android')
+    print(f'[sidecar] UNDOCK {name} ({mac}) platform={platform}')
+    result = bt_disconnect(mac)
+    push_telemetry({
+        'type': 'undock',
+        'mac': mac,
+        'name': name,
+        'platform': platform,
+        'bt_result': result,
+        'timestamp': time.time(),
+    })
+    return {'status': 'ok', 'mac': mac, 'name': name, 'bt_result': result}
+
+
+def get_dock_state():
+    """Return a snapshot of docked phones."""
+    with dock_lock:
+        return {mac: {k: v for k, v in info.items()} for mac, info in dock_state.items()}
 
 
 # ===== Settings API helper functions =====
@@ -762,7 +994,11 @@ class RingHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({
                 'status': 'ok',
                 'ringing': ring_state,
-                'livi_connected': sio_connected
+                'livi_connected': sio_connected,
+                # v0.4 — companion app / ANCS fields
+                'media': get_companion_media(),  # None when stale/absent → overlay falls back to LIVI
+                'notifications': get_notifications(),  # newest first
+                'dock': get_dock_state(),
             })
         elif parsed.path == '/weather':
             weather = fetch_weather()
@@ -864,6 +1100,47 @@ class RingHandler(http.server.BaseHTTPRequestHandler):
             text = params.get('text', [None])[0]
             handle_notify(slot, app, title, text)
             self._send_json({'status': 'notified', 'slot': slot})
+
+        # ===== v0.4 — Companion App / ANCS unified endpoints =====
+        elif parsed.path == '/media':
+            # Companion app (Android) reports media state.
+            # Body: { title, artist, album, app, playing, duration_ms, position_ms }
+            # Empty body or {"clear": true} clears companion media (fall back to LIVI).
+            body = self._read_body()
+            self._send_json(handle_media_post(body))
+
+        elif parsed.path == '/notifs':
+            # Companion app (Android) OR ANCS listener (iPhone) reports notifications.
+            # Body: { action: "add"|"remove"|"clear", id, title, text, app, platform }
+            body = self._read_body()
+            ret = handle_notif_post(body)
+            if isinstance(ret, tuple):
+                result, code = ret
+            else:
+                result, code = ret, 200
+            self._send_json(result, code)
+
+        elif parsed.path == '/dock':
+            # Companion app (Android) OR Shortcuts (iPhone) says "dock".
+            # Body: { mac, name, platform }
+            body = self._read_body()
+            ret = handle_dock_post(body)
+            if isinstance(ret, tuple):
+                result, code = ret
+            else:
+                result, code = ret, 200
+            self._send_json(result, code)
+
+        elif parsed.path == '/undock':
+            # Phone undocked.
+            # Body: { mac, platform }
+            body = self._read_body()
+            ret = handle_undock_post(body)
+            if isinstance(ret, tuple):
+                result, code = ret
+            else:
+                result, code = ret, 200
+            self._send_json(result, code)
 
         elif parsed.path == '/api/dom-dump':
             # Diagnostic: receive DOM dump from overlay and write to file
