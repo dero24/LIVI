@@ -1,0 +1,12 @@
+[Unit]
+Description=HFP Call Monitor (oFono -> sidecar)
+After=homephone-sidecar.service ofono.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/raspberry/hfp_call_monitor.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

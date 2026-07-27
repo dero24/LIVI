@@ -14,7 +14,7 @@ Key changes from v1:
 - Ring banner appears within the 424px hub bar
 - Sleek, modern, appliance-like aesthetic (not a car dashboard)
 """
-import struct, json, os, sys, shutil
+import struct, json, os, sys, shutil, re
 
 asar_path = '/home/raspberry/LIVI/extracted/resources/app.asar'
 backup_path = '/home/raspberry/LIVI/extracted/resources/app.asar.bak.homehub'
@@ -1071,6 +1071,28 @@ OVERLAY_SCRIPT = r"""
           font-size: 15px; font-weight: 300; color: #484f58;
           padding: 12px 0; text-align: center;
         }
+        .hub-notif-check {
+          display: flex; align-items: center; gap: 10px;
+          padding: 14px 16px;
+          background: rgba(88,166,255,0.06);
+          border: 1px solid rgba(88,166,255,0.12);
+          border-radius: 12px;
+          cursor: pointer;
+          transition: all 200ms cubic-bezier(0.4,0,0.2,1);
+        }
+        .hub-notif-check:active { transform: scale(0.98); background: rgba(88,166,255,0.1); }
+        .hub-notif-check-icon {
+          width: 28px; height: 28px; border-radius: 8px;
+          background: rgba(88,166,255,0.1);
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0; color: #58a6ff;
+        }
+        .hub-notif-check-icon svg { width: 16px; height: 16px; }
+        .hub-notif-check-text {
+          flex: 1; font-size: 14px; font-weight: 400; color: #8b949e;
+        }
+        .hub-notif-check-arrow { color: #484f58; }
+        .hub-notif-check-arrow svg { width: 16px; height: 16px; }
 
         /* Full Apps Grid link — tertiary, text only */
         #hub-landing-apps-link {
@@ -1107,8 +1129,12 @@ OVERLAY_SCRIPT = r"""
           </div>
         </div>
         <div id="hub-landing-notifs">
-          <div id="hub-landing-notifs-label">Recent</div>
-          <div class="hub-notif-empty">No recent notifications</div>
+          <div id="hub-landing-notifs-label">Notifications</div>
+          <div class="hub-notif-check" id="hub-notif-check-aa" onclick="homehubOpenNotifications()">
+            <div class="hub-notif-check-icon">${SVG.messages}</div>
+            <div class="hub-notif-check-text">Check phone for notifications</div>
+            <div class="hub-notif-check-arrow">${SVG.arrowRight}</div>
+          </div>
         </div>
         <div id="hub-landing-apps-link" onclick="homehubOpenFullApps()">
           Full Apps Grid
@@ -1179,7 +1205,34 @@ OVERLAY_SCRIPT = r"""
     showAAView();
     sendCmd('home');
   }
+
+  // Open AA notifications panel — replays the calibrated touch sequence.
+  // Always sends 'home' first to reset to the AA dashboard, so it works
+  // even if the user is already on the notifications page (prevents toggle-off).
+  function homehubOpenNotifications() {
+    var pos = getNotifsPos();
+    if (pos) {
+      showAAView();
+      // 1. Go to AA dashboard (resets to top of app grid)
+      sendCmd('home');
+      // 2. Wait for dashboard to render, then replay the recorded sequence
+      setTimeout(function() {
+        if (pos.sequence && pos.sequence.length > 0) {
+          replayTouchSequence(pos.sequence, function() {
+            // Notifications panel should now be open
+          });
+        } else if (pos.x !== undefined && pos.y !== undefined) {
+          // Fallback: just tap the recorded position
+          sendTouchAt(pos.x, pos.y);
+        }
+      }, 800);
+    } else {
+      // No calibration — fall back to apps grid
+      homehubOpenFullApps();
+    }
+  }
   window.homehubOpenFullApps = homehubOpenFullApps;
+  window.homehubOpenNotifications = homehubOpenNotifications;
 
   // --- Calibration Flow ---
   // First time a phone connects (or when user taps an uncalibrated tile),
@@ -1205,15 +1258,16 @@ OVERLAY_SCRIPT = r"""
     // uncalibrated tile). If null, calibrate all three.
     calibrating = true;
     calibrationStep = 0;
-    calibrationData = {};
+    // Preserve existing positions so skipped apps keep their calibration.
+    // finishCalibration overwrites appPositions[masterDeviceId] entirely,
+    // so we must seed calibrationData with what we already have.
+    var existing = appPositions[masterDeviceId] || {};
+    calibrationData = JSON.parse(JSON.stringify(existing));
 
     // If only calibrating one app, skip the intro and go straight to that step
     if (specificApp) {
       for (var i = 0; i < CALIBRATION_APPS.length; i++) {
         if (CALIBRATION_APPS[i].key === specificApp) {
-          // Preserve existing positions for other apps
-          var existing = appPositions[masterDeviceId] || {};
-          calibrationData = JSON.parse(JSON.stringify(existing));
           calibrationStep = i + 1;
           break;
         }
@@ -1628,6 +1682,232 @@ OVERLAY_SCRIPT = r"""
     startCalibration(null);
   }
   window.homehubRecalibrate = homehubRecalibrate;
+
+  // --- Notifications button calibration ---
+  // Uses the same "deferred down" technique as app calibration:
+  // scrolls are forwarded to AA, but the final TAP is recorded (not forwarded).
+  // Stores a touch sequence that gets replayed when opening notifications.
+  // The replay always starts with sendCmd('home') to reset to the dashboard,
+  // so it works even if the user is already on the notifications page.
+  function getNotifsPos() {
+    try {
+      var raw = localStorage.getItem('homehub.notifsPos');
+      if (raw) return JSON.parse(raw);
+    } catch(e) {}
+    return null;
+  }
+  function saveNotifsPos(data) {
+    try { localStorage.setItem('homehub.notifsPos', JSON.stringify(data)); } catch(e) {}
+  }
+
+  var notifsCalEl = null;
+  var notifsCalSequence = [];
+  var notifsCalStart = 0;
+  var notifsCalLastTime = 0;
+
+  function startNotifsCalibration() {
+    // Show AA dashboard first
+    showAAView();
+    sendCmd('home');
+
+    // Wait for dashboard to render, then show the calibration overlay
+    setTimeout(function() {
+      notifsCalSequence = [];
+      notifsCalStart = 0;
+      notifsCalLastTime = 0;
+
+      notifsCalEl = document.createElement('div');
+      notifsCalEl.id = 'homehub-notifs-cal';
+      notifsCalEl.style.cssText = [
+        'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0',
+        'z-index:100002',
+        'background:rgba(13,17,23,0.75)',
+        'backdrop-filter:blur(2px)',
+        '-webkit-backdrop-filter:blur(2px)',
+        'color:#e6edf3',
+        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif',
+        'display:flex', 'flex-direction:column', 'align-items:center',
+        'user-select:none', '-webkit-user-select:none',
+        'opacity:0', 'transition:opacity 300ms ease'
+      ].join(';');
+
+      notifsCalEl.innerHTML = '<style>' +
+        '#homehub-notifs-cal * { box-sizing:border-box; margin:0; padding:0; }' +
+        '#hub-ncal-header { position:fixed; top:0; left:0; right:0; padding:40px 40px 20px;' +
+          'text-align:center; background:linear-gradient(180deg,rgba(13,17,23,0.9) 0%,rgba(13,17,23,0) 100%);' +
+          'pointer-events:none; z-index:2; }' +
+        '#hub-ncal-instruction { font-size:24px; font-weight:400; color:#f0f6fc; margin-bottom:12px; }' +
+        '#hub-ncal-sub { font-size:15px; font-weight:300; color:#8b949e; }' +
+        '#hub-ncal-touch-area { position:fixed; top:' + HUB_HEIGHT + 'px; left:0; right:0; bottom:0;' +
+          'z-index:1; cursor:crosshair; touch-action:none; }' +
+        '#hub-ncal-reticle { position:fixed; width:60px; height:60px;' +
+          'border:2px solid rgba(63,185,80,0.6); border-radius:50%;' +
+          'pointer-events:none; z-index:3; transform:translate(-50%,-50%);' +
+          'display:none; transition:opacity 100ms; }' +
+        '#hub-ncal-reticle::after { content:""; position:absolute; top:50%; left:50%;' +
+          'width:6px; height:6px; background:#3fb950; border-radius:50%;' +
+          'transform:translate(-50%,-50%); }' +
+        '#hub-ncal-cancel { position:fixed; bottom:24px; right:24px;' +
+          'font-size:15px; color:#484f58; cursor:pointer; background:none; border:none;' +
+          'font-family:inherit; z-index:4; }' +
+        '#hub-ncal-cancel:hover { color:#8b949e; }' +
+        '</style>' +
+        '<div id="hub-ncal-header">' +
+          '<div id="hub-ncal-instruction">Tap the notifications bell icon</div>' +
+          '<div id="hub-ncal-sub">Scroll to find it if needed, then tap the bell (bottom right)</div>' +
+        '</div>' +
+        '<div id="hub-ncal-touch-area"></div>' +
+        '<div id="hub-ncal-reticle"></div>' +
+        '<button id="hub-ncal-cancel">Cancel</button>';
+
+      document.body.appendChild(notifsCalEl);
+      requestAnimationFrame(function() {
+        if (notifsCalEl) notifsCalEl.style.opacity = '1';
+      });
+
+      // Wire up the same "deferred down" technique as app calibration
+      var touchArea = notifsCalEl.querySelector('#hub-ncal-touch-area');
+      var reticle = notifsCalEl.querySelector('#hub-ncal-reticle');
+      var cancelBtn = notifsCalEl.querySelector('#hub-ncal-cancel');
+
+      var pointerDownPos = null;
+      var scrolling = false;
+      var pendingMoves = [];
+
+      if (touchArea) {
+        touchArea.addEventListener('pointermove', function(e) {
+          if (reticle) {
+            reticle.style.display = 'block';
+            reticle.style.left = e.clientX + 'px';
+            reticle.style.top = e.clientY + 'px';
+          }
+        });
+        touchArea.addEventListener('pointerleave', function() {
+          if (reticle) reticle.style.display = 'none';
+        });
+
+        touchArea.addEventListener('pointerdown', function(e) {
+          e.preventDefault();
+          var dispX = e.clientX;
+          var dispY = e.clientY;
+          pointerDownPos = { x: dispX, y: dispY };
+          scrolling = false;
+          pendingMoves = [];
+          var now = Date.now();
+          if (notifsCalStart === 0) notifsCalStart = now;
+          var delay = now - (notifsCalLastTime || notifsCalStart);
+          notifsCalLastTime = now;
+          notifsCalSequence.push({ x: dispX, y: dispY, action: 14, delay: delay });
+        });
+
+        touchArea.addEventListener('pointermove', function(e) {
+          if (!pointerDownPos) return;
+          e.preventDefault();
+          var dispX = e.clientX;
+          var dispY = e.clientY;
+          var dx = dispX - pointerDownPos.x;
+          var dy = dispY - pointerDownPos.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          var now = Date.now();
+          var delay = now - notifsCalLastTime;
+          notifsCalLastTime = now;
+
+          if (!scrolling) {
+            if (dist > 8) {
+              scrolling = true;
+              sendTouchEvent(pointerDownPos.x, pointerDownPos.y, 14);
+              for (var i = 0; i < pendingMoves.length; i++) {
+                sendTouchEvent(pendingMoves[i].x, pendingMoves[i].y, 15);
+              }
+              pendingMoves = [];
+            } else {
+              pendingMoves.push({ x: dispX, y: dispY });
+              notifsCalSequence.push({ x: dispX, y: dispY, action: 15, delay: delay });
+              return;
+            }
+          }
+          notifsCalSequence.push({ x: dispX, y: dispY, action: 15, delay: delay });
+          sendTouchEvent(dispX, dispY, 15);
+        });
+
+        touchArea.addEventListener('pointerup', function(e) {
+          if (!pointerDownPos) return;
+          e.preventDefault();
+          var dispX = e.clientX;
+          var dispY = e.clientY;
+          var now = Date.now();
+          var delay = now - notifsCalLastTime;
+          notifsCalLastTime = now;
+          var dx = dispX - pointerDownPos.x;
+          var dy = dispY - pointerDownPos.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (scrolling) {
+            notifsCalSequence.push({ x: dispX, y: dispY, action: 16, delay: delay });
+            sendTouchEvent(dispX, dispY, 16);
+            pointerDownPos = null;
+            scrolling = false;
+          } else if (dist < 15) {
+            // TAP — record but don't forward to AA
+            notifsCalSequence.push({ x: dispX, y: dispY, action: 16, delay: delay });
+            saveNotifsPos({
+              x: dispX, y: dispY,
+              sequence: notifsCalSequence.slice()
+            });
+            if (reticle) {
+              reticle.style.background = 'rgba(63,185,80,0.3)';
+              reticle.style.borderColor = '#3fb950';
+            }
+            // Close overlay and return to landing
+            setTimeout(function() {
+              closeNotifsCalibration();
+              showLandingView();
+            }, 400);
+          } else {
+            notifsCalSequence.push({ x: dispX, y: dispY, action: 16, delay: delay });
+            saveNotifsPos({
+              x: pointerDownPos.x, y: pointerDownPos.y,
+              sequence: notifsCalSequence.slice()
+            });
+            setTimeout(function() {
+              closeNotifsCalibration();
+              showLandingView();
+            }, 400);
+          }
+        });
+
+        touchArea.addEventListener('pointercancel', function(e) {
+          if (!pointerDownPos) return;
+          if (scrolling) {
+            sendTouchEvent(e.clientX, e.clientY, 16);
+          }
+          pointerDownPos = null;
+          scrolling = false;
+        });
+      }
+
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          closeNotifsCalibration();
+          showLandingView();
+        });
+      }
+    }, 800);
+  }
+
+  function closeNotifsCalibration() {
+    if (notifsCalEl) {
+      notifsCalEl.style.opacity = '0';
+      var el = notifsCalEl;
+      notifsCalEl = null;
+      setTimeout(function() { el.remove(); }, 300);
+    }
+    notifsCalSequence = [];
+    notifsCalStart = 0;
+    notifsCalLastTime = 0;
+  }
+  window.startNotifsCalibration = startNotifsCalibration;
 
   // --- Photo screensaver (Ken Burns) ---
   // Sidecar serves /photos (list) and /photo/<name> (image, CORP headers set).
@@ -2366,7 +2646,13 @@ OVERLAY_SCRIPT = r"""
           slot: slot
         };
       } else {
-        ringState = { ringing: false };
+        // Don't clobber AA protocol ring state — only clear if the current
+        // ring is from the sidecar (or there's no ring at all).
+        if (ringState && ringState.ringing && ringState.source === 'aa-protocol') {
+          // AA protocol is handling the ring — leave it alone
+        } else {
+          ringState = { ringing: false };
+        }
       }
 
       if (newRinging !== wasRinging) {
@@ -2381,6 +2667,110 @@ OVERLAY_SCRIPT = r"""
       sidecarFailures++;
       updateHealthDot();
     });
+  }
+
+  // --- AA protocol call detection via onEvent ---
+  // The patched main.js emits a 'call' projection-event via onAaPresence
+  // when the AA PhoneStatus protocol reports a call state change:
+  //   {callState: 'ringing', caller: '...'}  — incoming call
+  //   {callState: 'active'}                  — call answered
+  //   {callState: 'idle'}                    — call ended
+  // Only some phones send PhoneStatus over AA. For phones that don't,
+  // the Bluetooth HFP sidecar handles call detection via the /status poll.
+  // We listen for both 'call' and 'attention' events here.
+  var aaCallRinging = false;
+  var aaCallerId = '';
+  function setupAaCallListener() {
+    try {
+      if (!window.projection || !window.projection.ipc || !window.projection.ipc.onEvent) {
+        // Retry in 2s if projection.ipc isn't ready yet
+        setTimeout(setupAaCallListener, 2000);
+        return;
+      }
+
+      window.projection.ipc.onEvent(function(_evt, data) {
+        var d = (data || {});
+        var type = typeof d.type === 'string' ? d.type : undefined;
+
+        // Call events from patched onAaPresence — carry the call state and caller ID.
+        // Only some phones send PhoneStatus over AA; for phones that don't,
+        // the Bluetooth HFP sidecar handles call detection instead.
+        if (type === 'call') {
+          var p = d.payload || {};
+          if (p.callState === 'ringing') {
+            aaCallRinging = true;
+            aaCallerId = p.caller || '';
+            // Show ring banner if not already ringing from sidecar
+            if (!ringState || !ringState.ringing) {
+              ringState = {
+                ringing: true,
+                caller: aaCallerId || 'Incoming Call',
+                phone: '',
+                phoneName: masterDeviceId ? getPhoneName(masterDeviceId, 'Phone') : 'Phone',
+                slot: '1',
+                source: 'aa-protocol'
+              };
+              updateRingBanner();
+            } else if (ringState.source === 'aa-protocol' && aaCallerId) {
+              // Update caller ID if we already showing the banner
+              ringState.caller = aaCallerId;
+              updateRingBanner();
+            }
+          } else if (p.callState === 'active') {
+            // Call was answered — clear the ring banner
+            if (aaCallRinging) {
+              aaCallRinging = false;
+              if (ringState && ringState.ringing && ringState.source === 'aa-protocol') {
+                ringState = { ringing: false };
+                updateRingBanner();
+              }
+            }
+          } else if (p.callState === 'idle') {
+            // Call ended — clear the ring banner
+            if (aaCallRinging) {
+              aaCallRinging = false;
+              aaCallerId = '';
+              if (ringState && ringState.ringing && ringState.source === 'aa-protocol') {
+                ringState = { ringing: false };
+                updateRingBanner();
+              }
+            }
+          }
+          return;
+        }
+
+        // Attention events from ProjectionAudio — emitted when handleAudioData
+        // receives AudioAttentionRinging (cmd 14) or AudioAttentionStart (cmd 12)
+        if (type === 'attention') {
+          var p = d.payload || {};
+          if (p.kind === 'call') {
+            if (p.active && p.phase === 'incoming') {
+              aaCallRinging = true;
+              if (!ringState || !ringState.ringing) {
+                ringState = {
+                  ringing: true,
+                  caller: aaCallerId || 'Incoming Call',
+                  phone: '',
+                  phoneName: masterDeviceId ? getPhoneName(masterDeviceId, 'Phone') : 'Phone',
+                  slot: '1',
+                  source: 'aa-protocol'
+                };
+                updateRingBanner();
+              }
+            } else if (!p.active) {
+              if (aaCallRinging) {
+                aaCallRinging = false;
+                if (ringState && ringState.ringing && ringState.source === 'aa-protocol') {
+                  ringState = { ringing: false };
+                  updateRingBanner();
+                }
+              }
+            }
+          }
+          return;
+        }
+      });
+    } catch(e) {}
   }
 
   // --- Device detection via onEvent ---
@@ -2463,10 +2853,10 @@ OVERLAY_SCRIPT = r"""
   function setupDeviceDetection() {
     if (!window.projection || !window.projection.ipc || !window.projection.ipc.onEvent) return;
 
-    window.projection.ipc.onEvent(function(event) {
-      if (!event) return;
-      var type = event.type;
-      var payload = event.payload;
+    window.projection.ipc.onEvent(function(_evt, data) {
+      var d = (data || {});
+      var type = typeof d.type === 'string' ? d.type : undefined;
+      var payload = d.payload;
 
       if (type === 'devices' && payload) {
         currentDevices = Array.isArray(payload) ? payload : [];
@@ -2586,6 +2976,23 @@ OVERLAY_SCRIPT = r"""
     closeBtn.addEventListener('click', homehubCloseSettings);
     btnGroup.appendChild(closeBtn);
 
+    // Calibrate Notifications button — always visible (works whenever AA is showing)
+    var notifBtn = document.createElement('button');
+    notifBtn.textContent = 'Calibrate Notifications';
+    notifBtn.style.cssText = [
+      'padding:10px 20px', 'border-radius:10px',
+      'background:rgba(63,185,80,0.1)',
+      'border:1px solid rgba(63,185,80,0.25)',
+      'color:#3fb950', 'font-family:inherit',
+      'font-size:14px', 'font-weight:500',
+      'cursor:pointer', 'transition:all 200ms'
+    ].join(';');
+    notifBtn.addEventListener('click', function() {
+      homehubCloseSettings();
+      startNotifsCalibration();
+    });
+    btnGroup.appendChild(notifBtn);
+
     topBar.appendChild(btnGroup);
     settingsOverlayEl.appendChild(topBar);
 
@@ -2666,6 +3073,7 @@ OVERLAY_SCRIPT = r"""
     updateClock();
     fetchWeather();
     setupDeviceDetection();
+    setupAaCallListener();
     refreshPhotos();
 
     // Clock: update every 10s (seconds not shown)
@@ -2697,6 +3105,100 @@ OVERLAY_SCRIPT = r"""
 renderer_js += OVERLAY_SCRIPT
 print(f"Appended overlay script: {len(OVERLAY_SCRIPT)} chars")
 
+# --- Patch main.js: AA PhoneStatus call detection ---
+# The AA protocol sends PhoneStatus messages with a calls array that includes
+# call state (INCOMING=4, IN_CALL=1, etc.) and caller ID. LIVI's compiled
+# code only extracts signalStrength and ignores calls. We patch it to also
+# detect incoming calls and emit AudioAttentionRinging (same as CarPlay does),
+# so the renderer and our overlay can show a call notification.
+main_path = 'out/main/main.js'
+main_js = None
+for path, offset, size in files:
+    if path == main_path:
+        with open(asar_path, 'rb') as f:
+            f.seek(data_offset + offset)
+            main_js = f.read(size).decode('utf-8')
+        print(f"Read {main_path}: {len(main_js)} chars")
+        break
+
+if main_js:
+    # message and extracts signalStrength. We need to insert call detection
+    # code between the decode and the signalStrength check.
+    #
+    # The handler looks like:
+    #   let e=sl(this._proto.PhoneStatus,r),t=typeof e.signalStrength==`number`?e.signalStrength:void 0;if(t!==void 0){
+    #
+    # If we've already patched it (previous deployment), the string between
+    # the decode and `if(t!==void 0){` contains our _hhR/_hhC code.
+    # We use a regex to match both cases and replace with the new patch.
+    #
+    # The regex matches from the PhoneStatus decode up to (and including) `if(t!==void 0){`
+    # This is idempotent — it works whether or not a previous patch is present.
+    phonestatus_pattern = re.compile(
+        r"let e=sl\(this\._proto\.PhoneStatus,r\),t=typeof e\.signalStrength==`number`\?e\.signalStrength:void 0;"
+        r".*?"
+        r"if\(t!==void 0\)\{",
+        re.DOTALL
+    )
+
+    # The patch: after decoding PhoneStatus, check the calls array for call states.
+    # AA PhoneStatus.Call.State: UNKNOWN=0, IN_CALL=1, ON_HOLD=2, INACTIVE=3,
+    # INCOMING=4, CONFERENCED=5, MUTED=6
+    #
+    # Call lifecycle (incoming):
+    #   INCOMING (4) → emit AudioAttentionRinging (14), set _hhR=true
+    #   IN_CALL (1) when _hhR → call answered → emit AudioPhonecallStart (4),
+    #     clear _hhR, set _hhC=true
+    #   No calls when _hhR or _hhC → call ended → emit AudioPhonecallStop (5),
+    #     clear both flags
+    #
+    # Outgoing calls (IN_CALL without prior INCOMING) are not reported to the
+    # overlay — the phone's own UI handles those. We only detect incoming calls.
+    #
+    # Uses block scope { } to avoid leaking temp variables. Uses _hh prefix to avoid collisions.
+    # So=AudioData class, Vo=MessageHeader class, q.AudioData=MessageType, all module-level.
+    new_phonestatus = (
+        "let e=sl(this._proto.PhoneStatus,r),t=typeof e.signalStrength==`number`?e.signalStrength:void 0;"
+        "{let _ca=e.calls,_ri=false,_ic=false;if(_ca&&_ca.length>0){for(let _i=0;_i<_ca.length;_i++){let _s=_ca[_i].phone_state;if(_s===4){_ri=true;let _cl=_ca[_i].caller_id||_ca[_i].caller_number||``;if(!this._hhR){this._hhR=true;let _b=Buffer.allocUnsafeSlow(13);_b.writeUInt32LE(5,0);_b.writeFloatLE(0,4);_b.writeUInt32LE(2,8);_b.writeUInt8(14,12);this.emit(`message`,new So(new Vo(_b.length,q.AudioData),_b));this.emit(`device-status`,{callState:`ringing`,caller:_cl})}}else if(_s===1||_s===5){_ic=true}break}}"
+        "if(_ic&&this._hhR){this._hhR=false;this._hhC=true;let _b=Buffer.allocUnsafeSlow(13);_b.writeUInt32LE(5,0);_b.writeFloatLE(0,4);_b.writeUInt32LE(2,8);_b.writeUInt8(4,12);this.emit(`message`,new So(new Vo(_b.length,q.AudioData),_b));this.emit(`device-status`,{callState:`active`})}"
+        "if(!_ri&&!_ic&&(this._hhR||this._hhC)){this._hhR=false;this._hhC=false;let _b=Buffer.allocUnsafeSlow(13);_b.writeUInt32LE(5,0);_b.writeFloatLE(0,4);_b.writeUInt32LE(2,8);_b.writeUInt8(5,12);this.emit(`message`,new So(new Vo(_b.length,q.AudioData),_b));this.emit(`device-status`,{callState:`idle`})}}"
+        "if(t!==void 0){"
+    )
+
+    match = phonestatus_pattern.search(main_js)
+    if match:
+        old_text = match.group(0)
+        main_js = main_js[:match.start()] + new_phonestatus + main_js[match.end():]
+        print(f"Patched PhoneStatus handler: call detection added (replaced {len(old_text)} chars)")
+    else:
+        print(f"WARNING: Could not find PhoneStatus handler in main.js — call patch skipped")
+
+    # --- Patch onAaPresence to forward callState/caller to the renderer ---
+    # The PhoneStatus handler emits device-status events with {callState, caller},
+    # which reach onAaPresence via the device-presence event chain. But the
+    # compiled onAaPresence only extracts battery/signal and ignores callState.
+    # We patch it to also emit a projection-event with type 'call' so the
+    # overlay can display the actual caller ID.
+    #
+    # Idempotent: uses regex to match whether or not the patch is already present.
+    aapresence_pattern = re.compile(
+        r"(signalStrength:typeof t\.signalStrength==`number`\?t\.signalStrength:void 0\}\);)"
+        r"(?:if\(t\.callState\)\{this\.emitProjectionEvent\(\{type:`call`,payload:\{callState:t\.callState,caller:t\.caller\|\|``\}\}\)\})?"
+        r"(return\})"
+    )
+    aapresence_replacement = (
+        r"\1"
+        "if(t.callState){this.emitProjectionEvent({type:`call`,payload:{callState:t.callState,caller:t.caller||``}})}"
+        r"\2"
+    )
+
+    aamatch = aapresence_pattern.search(main_js)
+    if aamatch:
+        main_js = aapresence_pattern.sub(aapresence_replacement, main_js, count=1)
+        print(f"Patched onAaPresence: callState/caller forwarding added")
+    else:
+        print(f"WARNING: Could not find onAaPresence handler — caller ID patch skipped")
+
 # --- Rebuild the ASAR ---
 all_files_sorted = sorted(files, key=lambda x: x[1])
 new_data = bytearray()
@@ -2705,6 +3207,9 @@ offset_map = {}
 for path, old_offset, old_size in all_files_sorted:
     if path == renderer_path:
         content = renderer_js.encode('utf-8')
+    elif path == main_path and main_js is not None:
+        content = main_js.encode('utf-8')
+        print(f"Using patched main.js: {len(content)} bytes")
     else:
         with open(asar_path, 'rb') as f:
             f.seek(data_offset + old_offset)
