@@ -1,0 +1,7 @@
+# Installed by LIVI — lets raspberry spawn the root helper (livi-helper.py)
+# without a password. LIVI 8.0.0 spawns `sudo -n -E python3 -u <full path>`,
+# so the alias must match the fully-qualified helper path (with any args).
+# Remove this file to revoke.
+Cmnd_Alias LIVI_BT = /usr/bin/python3 *livi-helper.py, \
+                     /usr/bin/python3 *livi-helper.py *
+raspberry ALL=(root) NOPASSWD: SETENV: LIVI_BT

@@ -1,0 +1,20 @@
+echo '=== uptime / reachability ==='
+uptime
+echo '=== dongle present? ==='
+lsusb | grep -iE 'tp-link|realtek|2357' || echo 'dongle NOT plugged'
+echo '=== smoking gun: previous boot kernel log (rtw88/hang) ==='
+journalctl -k -b -1 --no-pager 2>/dev/null | grep -iE 'rtw|hung task|blocked for|usb .*reset|xhci' | tail -30
+echo '=== this boot kernel log ==='
+journalctl -k -b --no-pager 2>/dev/null | grep -iE 'rtw|hung task|blocked for' | tail -15
+echo '=== NM powersave conf ==='
+ls /etc/NetworkManager/conf.d/ 2>/dev/null
+cat /etc/NetworkManager/conf.d/*.conf 2>/dev/null
+echo '=== modprobe.d rtw ==='
+ls /etc/modprobe.d/ 2>/dev/null
+cat /etc/modprobe.d/rtw* 2>/dev/null || echo 'no rtw88 modprobe conf'
+echo '=== rtw88_core disable_lps_deep param exists? ==='
+ls /sys/module/rtw88_core/parameters/ 2>/dev/null | grep -i lps || echo 'module not loaded (dongle unplugged)'
+modinfo rtw88_core 2>/dev/null | grep -iE 'parm.*lps'
+echo '=== current usb autosuspend fix ==='
+cat /boot/firmware/cmdline.txt
+cat /etc/udev/rules.d/99-usb-dongle-power.rules 2>/dev/null

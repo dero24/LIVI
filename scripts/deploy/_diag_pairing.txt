@@ -1,0 +1,18 @@
+echo '=== adapter state ==='
+bluetoothctl show
+echo '=== agents / helper processes ==='
+ps aux | grep -iE 'livi-helper|bt-agent|hfp' | grep -v grep
+echo '=== bluetooth-agent service ==='
+systemctl --user status bluetooth-agent.service --no-pager 2>&1 | head -12
+echo '=== hfp monitor service ==='
+systemctl --user status hfp-call-monitor.service --no-pager 2>&1 | head -12
+echo '=== livi service ==='
+systemctl --user is-active livi.service
+echo '=== helper file ==='
+ls -la /home/raspberry/LIVI/extracted/resources/driver/helper/ 2>&1 | head
+echo '=== bluetoothd recent logs ==='
+journalctl -u bluetooth --since '30 min ago' --no-pager 2>&1 | tail -30
+echo '=== livi helper logs ==='
+journalctl --user -u livi.service --since '30 min ago' --no-pager 2>&1 | grep -iE 'agent|pair|bluetooth|helper' | tail -20
+echo '=== paired devices ==='
+bluetoothctl devices

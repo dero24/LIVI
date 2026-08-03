@@ -1,0 +1,13 @@
+cat /boot/firmware/cmdline.txt
+echo '--- udev rule:'
+cat /etc/udev/rules.d/99-usb-dongle-power.rules 2>/dev/null || echo MISSING
+echo '--- usbcore autosuspend:'
+cat /sys/module/usbcore/parameters/autosuspend
+echo '--- usb power/control:'
+for f in /sys/bus/usb/devices/*/power/control; do echo "$f: $(cat $f)"; done
+echo '--- wlan0 powersave:'
+iw dev wlan0 get power_save 2>/dev/null
+echo '--- wlan1 exists:'
+ip -br addr show wlan1 2>/dev/null || echo 'wlan1 missing'
+echo '--- wlan0 ip:'
+ip -br addr show wlan0

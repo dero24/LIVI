@@ -97,6 +97,9 @@ OVERLAY_SCRIPT = r"""
   var viewingAA = false;        // user is viewing the AA/CarPlay screen (not home)
   var viewingLanding = false;   // user is viewing the phone landing page
   var mediaIsPlaying = false;   // tracks AA media play state for play/pause button
+  var companionMediaActive = false; // true when companion app media is fresh (takes priority over LIVI readMedia)
+  var nightModeActive = false;  // true when night mode dimming is currently applied
+  var nightModeConfig = null;   // last fetched night mode config from sidecar
   var phoneNames = {}; // deviceId -> user-defined name (persisted in localStorage)
   var phoneSlots = {}; // slot number -> deviceId (mapped by dock order)
   var registrationHandled = {};
@@ -358,12 +361,69 @@ OVERLAY_SCRIPT = r"""
       ssGreeting.textContent = g;
     }
 
-    // Night mode (22:00 - 07:00): everything whispers — dim clock, no
-    // weather, photos nearly black. Just a clock in the dark.
-    var night = hour24 >= 22 || hour24 < 7;
-    if (document.body) {
-      if (night) document.body.classList.add('hub-night');
-      else document.body.classList.remove('hub-night');
+    // Night mode is now driven by the sidecar config (v0.6).
+    // The body.hub-night class is toggled by applyNightMode() based on
+    // the sidecar's response (time-based, follow-phone, or manual override).
+    // We no longer hardcode 22-7 here.
+  }
+
+  // --- Night mode (v0.6) ---
+  // Polls the sidecar for night mode config + active status, then applies
+  // the dimming overlay + body.hub-night class. The sidecar handles the logic
+  // (time-based, follow-phone, manual override) — the overlay just renders.
+  function pollNightMode() {
+    xhrGet(SIDECAR_URL + '/api/display/nightmode', function(data) {
+      if (!data) return;
+      nightModeConfig = data;
+      applyNightMode(data.active, data.brightness_pct, data.warm_tint, data.warm_tint_intensity);
+    }, function() {
+      // Sidecar unreachable — fall back to simple time-based check
+      var hour = new Date().getHours();
+      var night = hour >= 22 || hour < 6;
+      if (nightModeConfig === null) {
+        applyNightMode(night, 35, true, 0.12);
+      }
+    });
+  }
+
+  // Apply or remove the night mode dimming overlay.
+  // brightnessPct: 5-100 (100 = full brightness, 5 = nearly black)
+  // warmTint: if true, apply a subtle amber tint (like Night Shift/f.lux)
+  // warmIntensity: 0-1, how strong the warm tint is
+  function applyNightMode(active, brightnessPct, warmTint, warmIntensity) {
+    var dimEl = document.getElementById('homehub-night-dim');
+    if (!dimEl) return;
+
+    if (active && nightModeActive) {
+      // Already active — just update intensity if config changed
+      var dimAlpha = (100 - (brightnessPct || 35)) / 100;
+      var bg = warmTint
+        ? 'rgba(' + Math.round(255 * (warmIntensity || 0.12)) + ',' + Math.round(180 * (warmIntensity || 0.12)) + ',' + Math.round(100 * (warmIntensity || 0.12)) + ',' + dimAlpha + ')'
+        : 'rgba(0,0,0,' + dimAlpha + ')';
+      dimEl.style.background = bg;
+      if (document.body) document.body.classList.add('hub-night');
+      return;
+    }
+
+    nightModeActive = active;
+    if (active) {
+      // Activate: dim the screen with a smooth transition
+      var dimAlpha = (100 - (brightnessPct || 35)) / 100;
+      if (warmTint) {
+        // Warm tint: mix amber with black. The intensity controls how warm.
+        // At 0.12 intensity, this is a subtle amber glow, not a disco.
+        var r = Math.round(255 * (warmIntensity || 0.12));
+        var g = Math.round(180 * (warmIntensity || 0.12));
+        var b = Math.round(100 * (warmIntensity || 0.12));
+        dimEl.style.background = 'rgba(' + r + ',' + g + ',' + b + ',' + dimAlpha + ')';
+      } else {
+        dimEl.style.background = 'rgba(0,0,0,' + dimAlpha + ')';
+      }
+      if (document.body) document.body.classList.add('hub-night');
+    } else {
+      // Deactivate: fade back to transparent
+      dimEl.style.background = 'transparent';
+      if (document.body) document.body.classList.remove('hub-night');
     }
   }
 
@@ -804,6 +864,24 @@ OVERLAY_SCRIPT = r"""
     `;
 
     document.body.appendChild(barEl);
+
+    // --- Night mode dimming overlay (v0.6) ---
+    // Full-screen overlay that sits on top of EVERYTHING (including AA video)
+    // with pointer-events:none so touch passes through. When night mode is
+    // active, this overlay darkens the screen + applies a warm tint.
+    // Smooth 1s CSS transition (2026 best practice: "theming is a gradient, not a toggle").
+    var dimEl = document.createElement('div');
+    dimEl.id = 'homehub-night-dim';
+    dimEl.style.cssText = [
+      'position:fixed',
+      'top:0', 'left:0', 'right:0', 'bottom:0',
+      'z-index:99999',  // above AA video (z-index:1) and hub bar (99998)
+      'pointer-events:none',  // touch passes through to AA video
+      'background:transparent',
+      'transition:background 1000ms ease, backdrop-filter 1000ms ease',
+      'will-change:background'
+    ].join(';');
+    document.body.appendChild(dimEl);
 
     // Wire up media controls via addEventListener (inline onclick blocked by CSP)
     var prevBtn = barEl.querySelector('#hub-ctrl-prev');
@@ -2069,11 +2147,24 @@ OVERLAY_SCRIPT = r"""
     var answerBtn = document.getElementById('hub-ring-answer');
     if (declineBtn) declineBtn.addEventListener('click', function() {
       sendCmd('rejectPhone');
-      xhrPost(SIDECAR_URL + '/hangup?slot=1');
+      var dSlot = (ringState && ringState.slot) || '1';
+      // Reject via oFono too — works for any BT-connected phone, not just AA.
+      xhrPost(SIDECAR_URL + '/reject?slot=' + encodeURIComponent(dSlot));
     });
     if (answerBtn) answerBtn.addEventListener('click', function() {
-      sendCmd('acceptPhone');
-      xhrPost(SIDECAR_URL + '/hangup?slot=1');
+      var aSlot = (ringState && ringState.slot) || '1';
+      // Switch projection to the ringing phone if it isn't the active one —
+      // answer any phone's call and the hub switches to that user's phone.
+      var ringDev = ringState && ringState.deviceId;
+      if (ringDev && ringDev !== masterDeviceId &&
+          window.projection && window.projection.ipc && window.projection.ipc.selectDevice) {
+        window.projection.ipc.selectDevice(ringDev);
+        masterDeviceId = ringDev;
+        renderDevices();
+      }
+      sendCmd('acceptPhone'); // AA path (the projecting phone)
+      // HFP path via oFono (any BT-connected phone) — also clears the banner.
+      xhrPost(SIDECAR_URL + '/answer?slot=' + encodeURIComponent(aSlot));
     });
   }
 
@@ -2082,9 +2173,11 @@ OVERLAY_SCRIPT = r"""
   var pendingRegistrationDeviceId = null; // Device waiting for registration
   var registrationCompleteCallback = null; // Called after registration completes
 
-  function showRegistrationPrompt(deviceId, defaultName, onComplete) {
+  function showRegistrationPrompt(deviceId, defaultName, onComplete, force) {
     if (registrationEl) return; // Already showing
-    if (phoneNames[deviceId]) { if (onComplete) onComplete(); return; } // Already registered
+    // force=true (from hub settings "Name Phone" button) shows the prompt even
+    // for an already-named phone so it can be renamed.
+    if (!force && phoneNames[deviceId]) { if (onComplete) onComplete(); return; } // Already registered
 
     pendingRegistrationDeviceId = deviceId;
     registrationCompleteCallback = onComplete;
@@ -2222,8 +2315,12 @@ OVERLAY_SCRIPT = r"""
 
     document.body.appendChild(registrationEl);
 
+    // Renaming an already-registered phone: adjust title and prefill the name
+    var regTitleEl = document.getElementById('hub-reg-title');
+    if (regTitleEl && force && phoneNames[deviceId]) regTitleEl.textContent = 'Rename Phone';
+
     // --- Touch keyboard logic ---
-    var typedText = '';
+    var typedText = (force && phoneNames[deviceId]) ? phoneNames[deviceId] : '';
     var shiftActive = false;
     var textSpan = document.getElementById('hub-reg-text');
     var displayEl = document.getElementById('hub-reg-display');
@@ -2305,6 +2402,7 @@ OVERLAY_SCRIPT = r"""
         phoneNames[deviceId] = typedText.trim();
         savePhoneNames();
       }
+      registrationHandled[deviceId] = true; // don't auto-prompt again this session
       if (registrationEl) {
         registrationEl.remove();
         registrationEl = null;
@@ -2666,7 +2764,40 @@ OVERLAY_SCRIPT = r"""
     btn.innerHTML = isPlaying ? SVG.pauseIcon : SVG.playIcon;
   }
 
+  // Update now-playing bar from companion app media (POSTed to sidecar /media).
+  // Companion format: { title, artist, album, app, playing, duration_ms, position_ms, source }
+  // Converts to the LIVI media shape that updateNowPlayingFromMedia() expects, so we
+  // reuse the same rendering path. This catches apps that AA doesn't report (e.g. SiriusXM).
+  function updateNowPlayingFromCompanion(cm) {
+    if (!cm) {
+      companionMediaActive = false;
+      // Companion media went stale — fall back to LIVI media.
+      // If a phone is connected, pollNowPlaying() will fetch fresh LIVI media.
+      // If no phone is connected, clear the bar so it doesn't show stale text.
+      if (phoneConnected) {
+        pollNowPlaying();
+      } else {
+        updateNowPlayingFromMedia(null);
+      }
+      return;
+    }
+    companionMediaActive = true;
+    // Convert companion format → LIVI media format
+    var media = {
+      MediaSongName: cm.title || '',
+      MediaArtistName: cm.artist || '',
+      MediaAlbumName: cm.album || '',
+      MediaAPPName: cm.app || '',
+      // LIVI uses: 1=playing, 2=paused, 0=stopped
+      MediaPlayStatus: cm.playing ? 1 : 2
+    };
+    updateNowPlayingFromMedia(media);
+  }
+
   function pollNowPlaying() {
+    // Skip LIVI media polling when the companion app is actively reporting media
+    // (companion takes priority — it catches Sirius and other apps AA doesn't report).
+    if (companionMediaActive) return;
     if (!window.projection || !window.projection.ipc || !window.projection.ipc.readMedia) return;
     if (!phoneConnected) return; // No point polling if no phone
 
@@ -2690,18 +2821,30 @@ OVERLAY_SCRIPT = r"""
       if (newRinging) {
         var slot = ringKeys[0];
         var info = ringDict[slot] || {};
-        // Look up phone name for this slot
-        var deviceId = phoneSlots[slot];
-        var phoneName = deviceId ? getPhoneName(deviceId, '') : '';
-        // If no slot mapping, try to use the active device
-        if (!phoneName && masterDeviceId) {
-          phoneName = getPhoneName(masterDeviceId, '');
+        // Resolve WHICH phone is ringing:
+        // 1. numeric slot -> dock-order device mapping
+        // 2. HFP phone_name (BT alias) -> match against LIVI's device list
+        // 3. fall back to the active device
+        var deviceId = phoneSlots[slot] || null;
+        if (!deviceId && info.phone_name) {
+          for (var i = 0; i < currentDevices.length; i++) {
+            var d = currentDevices[i];
+            if (d.name === info.phone_name || d.model === info.phone_name) {
+              deviceId = d.id;
+              break;
+            }
+          }
         }
+        if (!deviceId && masterDeviceId) deviceId = masterDeviceId;
+        var phoneName = deviceId ? getPhoneName(deviceId, '') : '';
+        if (!phoneName) phoneName = info.phone_name || '';
         ringState = {
           ringing: true,
           caller: info.caller || 'Unknown Caller',
           phone: info.phone || '',
           phoneName: phoneName,
+          deviceId: deviceId,
+          btMac: info.bt_mac || '',
           slot: slot
         };
       } else {
@@ -2718,6 +2861,18 @@ OVERLAY_SCRIPT = r"""
         updateRingBanner();
       } else if (newRinging) {
         updateRingBanner();
+      }
+
+      // --- Companion app media (v0.5) ---
+      // data.media is non-null when the Android companion app is actively reporting
+      // media state (within the sidecar's 15s TTL). When present, it takes priority
+      // over LIVI's readMedia() because it catches apps AA doesn't report (SiriusXM).
+      // When null (no companion app, or companion went stale), we fall back to LIVI.
+      if (data && data.media) {
+        updateNowPlayingFromCompanion(data.media);
+      } else if (companionMediaActive) {
+        // Companion media just went stale — clear flag and let LIVI take over
+        updateNowPlayingFromCompanion(null);
       }
 
       sidecarFailures = 0;
@@ -2739,6 +2894,14 @@ OVERLAY_SCRIPT = r"""
   // We listen for both 'call' and 'attention' events here.
   var aaCallRinging = false;
   var aaCallerId = '';
+
+  // AA call events always come from the phone that is currently projecting
+  // (only a projecting phone has a live AA session sending PhoneStatus).
+  function activeRingDeviceId() {
+    if (masterDeviceId) return masterDeviceId;
+    var act = getFirstActiveDevice(currentDevices);
+    return act ? act.id : null;
+  }
   function setupAaCallListener() {
     try {
       if (!window.projection || !window.projection.ipc || !window.projection.ipc.onEvent) {
@@ -2761,11 +2924,13 @@ OVERLAY_SCRIPT = r"""
             aaCallerId = p.caller || '';
             // Show ring banner if not already ringing from sidecar
             if (!ringState || !ringState.ringing) {
+              var ringDev = activeRingDeviceId();
               ringState = {
                 ringing: true,
                 caller: aaCallerId || 'Incoming Call',
                 phone: '',
-                phoneName: masterDeviceId ? getPhoneName(masterDeviceId, 'Phone') : 'Phone',
+                phoneName: ringDev ? getPhoneName(ringDev, 'Phone') : 'Phone',
+                deviceId: ringDev,
                 slot: '1',
                 source: 'aa-protocol'
               };
@@ -2806,11 +2971,13 @@ OVERLAY_SCRIPT = r"""
             if (p.active && p.phase === 'incoming') {
               aaCallRinging = true;
               if (!ringState || !ringState.ringing) {
+                var ringDev = activeRingDeviceId();
                 ringState = {
                   ringing: true,
                   caller: aaCallerId || 'Incoming Call',
                   phone: '',
-                  phoneName: masterDeviceId ? getPhoneName(masterDeviceId, 'Phone') : 'Phone',
+                  phoneName: ringDev ? getPhoneName(ringDev, 'Phone') : 'Phone',
+                  deviceId: ringDev,
                   slot: '1',
                   source: 'aa-protocol'
                 };
@@ -2913,7 +3080,10 @@ OVERLAY_SCRIPT = r"""
         phoneConnected = true;
       }
     }
-    if (!masterDeviceId && active) handleActiveDevice(active);
+    // Prompt to name any new phone — handleActiveDevice has its own guards
+    // (phoneNames / registrationHandled), so calling it unconditionally is safe
+    // and covers the case where masterDeviceId was set before the device event.
+    if (active) handleActiveDevice(active);
     renderDevices();
   }
 
@@ -2945,14 +3115,20 @@ OVERLAY_SCRIPT = r"""
         // 'media' = full snapshot arrived — update now-playing bar directly from payload.
         // This is the real-time event (no polling delay). Payload shape:
         // { payload: { media: { MediaSongName, MediaArtistName, MediaAPPName, MediaPlayStatus, ... } } }
-        var mediaPayload = d.payload && d.payload.payload ? d.payload.payload : d.payload;
-        var media = mediaPayload && mediaPayload.media;
-        if (media) {
-          updateNowPlayingFromMedia(media);
+        // Skip when companion app media is active (companion takes priority — catches Sirius).
+        if (!companionMediaActive) {
+          var mediaPayload = d.payload && d.payload.payload ? d.payload.payload : d.payload;
+          var media = mediaPayload && mediaPayload.media;
+          if (media) {
+            updateNowPlayingFromMedia(media);
+          }
         }
       } else if (type === 'media-reset') {
-        // State cleared (session switch, phone disconnect) — call readMedia() for fresh state
-        pollNowPlaying();
+        // State cleared (session switch, phone disconnect) — call readMedia() for fresh state.
+        // Skip when companion is active (companion media is independent of LIVI session state).
+        if (!companionMediaActive) {
+          pollNowPlaying();
+        }
       }
     });
 
@@ -3000,14 +3176,64 @@ OVERLAY_SCRIPT = r"""
     topBar.appendChild(title);
 
     var btnGroup = document.createElement('div');
-    btnGroup.style.cssText = 'display:flex;gap:12px;align-items:center';
+    btnGroup.style.cssText = 'display:flex;gap:10px;align-items:center';
+
+    // Calibrate Notifications button — always visible (works whenever AA is showing)
+    var notifBtn = document.createElement('button');
+    notifBtn.textContent = 'Calibrate Notifications';
+    notifBtn.style.cssText = [
+      'padding:10px 18px', 'border-radius:10px',
+      'background:rgba(63,185,80,0.1)',
+      'border:1px solid rgba(63,185,80,0.25)',
+      'color:#3fb950', 'font-family:inherit',
+      'font-size:14px', 'font-weight:500',
+      'cursor:pointer', 'transition:all 200ms'
+    ].join(';');
+    notifBtn.addEventListener('click', function() {
+      homehubCloseSettings();
+      startNotifsCalibration();
+    });
+    btnGroup.appendChild(notifBtn);
 
     // Re-calibrate button (only show if a phone is connected)
     if (phoneConnected) {
+      // Resolve the active device id — with wireless AA the user may never have
+      // tapped a bubble, so masterDeviceId can still be null.
+      var settingsDevId = masterDeviceId;
+      if (!settingsDevId) {
+        var actDev = getFirstActiveDevice(currentDevices);
+        if (actDev) settingsDevId = actDev.id;
+      }
+
+      // Name Phone button — prompt to name/rename the connected phone from settings
+      if (settingsDevId) {
+        var nameBtn = document.createElement('button');
+        nameBtn.textContent = phoneNames[settingsDevId] ? 'Rename Phone' : 'Name Phone';
+        nameBtn.style.cssText = [
+          'padding:10px 18px', 'border-radius:10px',
+          'background:rgba(210,153,34,0.1)',
+          'border:1px solid rgba(210,153,34,0.3)',
+          'color:#d29922', 'font-family:inherit',
+          'font-size:14px', 'font-weight:500',
+          'cursor:pointer', 'transition:all 200ms'
+        ].join(';');
+        nameBtn.addEventListener('click', function() {
+          var dev = null;
+          for (var i = 0; i < currentDevices.length; i++) {
+            if (currentDevices[i].id === settingsDevId) { dev = currentDevices[i]; break; }
+          }
+          homehubCloseSettings();
+          showRegistrationPrompt(settingsDevId, (dev && (dev.name || dev.model)) || 'Phone', function() {
+            renderDevices();
+          }, true);
+        });
+        btnGroup.appendChild(nameBtn);
+      }
+
       var recalBtn = document.createElement('button');
       recalBtn.textContent = 'Re-calibrate Apps';
       recalBtn.style.cssText = [
-        'padding:10px 20px', 'border-radius:10px',
+        'padding:10px 18px', 'border-radius:10px',
         'background:rgba(88,166,255,0.12)',
         'border:1px solid rgba(88,166,255,0.3)',
         'color:#58a6ff', 'font-family:inherit',
@@ -3021,7 +3247,7 @@ OVERLAY_SCRIPT = r"""
       var forgetBtn = document.createElement('button');
       forgetBtn.textContent = 'Forget Phone';
       forgetBtn.style.cssText = [
-        'padding:10px 20px', 'border-radius:10px',
+        'padding:10px 18px', 'border-radius:10px',
         'background:rgba(255,107,107,0.1)',
         'border:1px solid rgba(255,107,107,0.25)',
         'color:#ff6b6b', 'font-family:inherit',
@@ -3029,9 +3255,9 @@ OVERLAY_SCRIPT = r"""
         'cursor:pointer', 'transition:all 200ms'
       ].join(';');
       forgetBtn.addEventListener('click', function() {
-        if (masterDeviceId) {
-          delete phoneNames[masterDeviceId];
-          delete appPositions[masterDeviceId];
+        if (settingsDevId) {
+          delete phoneNames[settingsDevId];
+          delete appPositions[settingsDevId];
           savePhoneNames();
           saveAppPositions();
         }
@@ -3041,7 +3267,11 @@ OVERLAY_SCRIPT = r"""
       btnGroup.appendChild(forgetBtn);
     }
 
-    // Close button
+    // Close button — always last, with a visual separator
+    var sep = document.createElement('div');
+    sep.style.cssText = 'width:1px;height:24px;background:rgba(255,255,255,0.1);margin:0 4px';
+    btnGroup.appendChild(sep);
+
     var closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close';
     closeBtn.style.cssText = [
@@ -3054,23 +3284,6 @@ OVERLAY_SCRIPT = r"""
     ].join(';');
     closeBtn.addEventListener('click', homehubCloseSettings);
     btnGroup.appendChild(closeBtn);
-
-    // Calibrate Notifications button — always visible (works whenever AA is showing)
-    var notifBtn = document.createElement('button');
-    notifBtn.textContent = 'Calibrate Notifications';
-    notifBtn.style.cssText = [
-      'padding:10px 20px', 'border-radius:10px',
-      'background:rgba(63,185,80,0.1)',
-      'border:1px solid rgba(63,185,80,0.25)',
-      'color:#3fb950', 'font-family:inherit',
-      'font-size:14px', 'font-weight:500',
-      'cursor:pointer', 'transition:all 200ms'
-    ].join(';');
-    notifBtn.addEventListener('click', function() {
-      homehubCloseSettings();
-      startNotifsCalibration();
-    });
-    btnGroup.appendChild(notifBtn);
 
     topBar.appendChild(btnGroup);
     settingsOverlayEl.appendChild(topBar);
@@ -3088,33 +3301,73 @@ OVERLAY_SCRIPT = r"""
     // Use XHR (not fetch) to load the settings HTML — XHR is proven to work
     // with the sidecar (same mechanism as weather/ring polling). fetch() may
     // hang under LIVI's COEP (Cross-Origin-Embedder-Policy: require-corp).
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', SIDECAR_URL + '/settings', true);
-    xhr.timeout = 5000;
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== 4) return;
+    // The sidecar is often still starting when LIVI comes up, so retry with
+    // backoff before giving up. The cache-buster defeats Chromium's XHR cache
+    // (the sidecar also sends Cache-Control: no-store for /settings).
+    var settingsAttempts = 0;
+    var MAX_SETTINGS_ATTEMPTS = 4;
+
+    function loadSettingsPage() {
       if (!settingsOverlayEl) return;
-      if (xhr.status === 200) {
-        var iframe = document.createElement('iframe');
-        iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%';
-        iframe.setAttribute('allow', 'clipboard-read; clipboard-write');
-        // Use srcdoc so the iframe renders the HTML as an about:blank document
-        // (inherits parent origin — no cross-origin iframe navigation issues).
-        // Inject a <base> tag so relative API calls resolve to the sidecar.
-        iframe.srcdoc = xhr.responseText.replace(/<head([^>]*)>/i, '<head$1><base href="' + SIDECAR_URL + '/">');
-        loading.remove();
-        settingsOverlayEl.appendChild(iframe);
-      } else {
-        loading.textContent = 'Unable to load settings (HTTP ' + xhr.status + ')';
+      settingsAttempts++;
+      loading.textContent = settingsAttempts > 1
+        ? 'Loading settings... (retry ' + (settingsAttempts - 1) + ')'
+        : 'Loading settings...';
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', SIDECAR_URL + '/settings?_=' + Date.now(), true);
+      xhr.timeout = 15000;
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        if (!settingsOverlayEl) return;
+        if (xhr.status === 200) {
+          var iframe = document.createElement('iframe');
+          iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%';
+          iframe.setAttribute('allow', 'clipboard-read; clipboard-write');
+          // Use srcdoc so the iframe renders the HTML as an about:blank document
+          // (inherits parent origin — no cross-origin iframe navigation issues).
+          // Inject a <base> tag so relative API calls resolve to the sidecar,
+          // and a <style> hiding the settings page's own header — the overlay
+          // provides its own top bar, so the in-page one would be a duplicate.
+          iframe.srcdoc = xhr.responseText.replace(/<head([^>]*)>/i,
+            '<head$1><base href="' + SIDECAR_URL + '/">' +
+            '<style>.header{display:none!important}</style>');
+          loading.remove();
+          settingsOverlayEl.appendChild(iframe);
+        } else {
+          settingsLoadFailed('HTTP ' + xhr.status);
+        }
+      };
+      xhr.onerror = function() { settingsLoadFailed('network error'); };
+      xhr.ontimeout = function() { settingsLoadFailed('timeout'); };
+      xhr.send();
+    }
+
+    function settingsLoadFailed(reason) {
+      if (!settingsOverlayEl) return;
+      if (settingsAttempts < MAX_SETTINGS_ATTEMPTS) {
+        setTimeout(loadSettingsPage, 2000);
+        return;
       }
-    };
-    xhr.onerror = function() {
-      if (settingsOverlayEl) loading.textContent = 'Unable to load settings (network error)';
-    };
-    xhr.ontimeout = function() {
-      if (settingsOverlayEl) loading.textContent = 'Unable to load settings (timeout)';
-    };
-    xhr.send();
+      loading.textContent = 'Unable to load settings (' + reason + ')';
+      loading.style.textAlign = 'center';
+      // Manual retry — the sidecar may just be slow after a LIVI restart.
+      var retryBtn = document.createElement('button');
+      retryBtn.textContent = 'Retry';
+      retryBtn.style.cssText = [
+        'display:inline-block', 'margin:16px 0 0', 'padding:10px 28px',
+        'border-radius:10px', 'background:rgba(88,166,255,0.12)',
+        'border:1px solid rgba(88,166,255,0.3)', 'color:#58a6ff',
+        'font-family:inherit', 'font-size:14px', 'font-weight:500',
+        'cursor:pointer'
+      ].join(';');
+      retryBtn.addEventListener('click', function() {
+        settingsAttempts = 0;
+        loadSettingsPage(); // resets loading text, which removes this button
+      });
+      loading.appendChild(retryBtn);
+    }
+
+    loadSettingsPage();
 
     // Listen for close message from the iframe
     window.addEventListener('message', function(e) {
@@ -3172,6 +3425,11 @@ OVERLAY_SCRIPT = r"""
 
     // Now playing: poll every 3s as fallback (media events handle real-time updates)
     setInterval(pollNowPlaying, 3000);
+
+    // Night mode: poll every 10s (responsive enough for time-based transitions
+    // and settings changes, without excessive polling)
+    pollNightMode();
+    setInterval(pollNightMode, 10000);
 
     console.log('[HomeHub v2] Master Phone Layout started');
   }
@@ -3254,30 +3512,48 @@ if main_js:
         print(f"WARNING: Could not find PhoneStatus handler in main.js — call patch skipped")
 
     # --- Patch onAaPresence to forward callState/caller to the renderer ---
-    # The PhoneStatus handler emits device-status events with {callState, caller},
-    # which reach onAaPresence via the device-presence event chain. But the
-    # compiled onAaPresence only extracts battery/signal and ignores callState.
-    # We patch it to also emit a projection-event with type 'call' so the
-    # overlay can display the actual caller ID.
+    # The PhoneStatus handler emits device-status events with {callState, caller}.
+    # LIVI 8.0.0 event chain (verified against src):
+    #   Session.ts emit('device-status', {callState, caller})
+    #   -> AAStack re-emit -> AaEventBridge deps.emitDeviceStatus
+    #   -> AaSession: emit('device-presence', { kind: 'status', ...s })
+    #   -> ProjectionDriverManager -> ProjectionService.onAaPresence(session, p)
+    # The compiled onAaPresence status branch only extracts battery/signal and
+    # ignores callState/caller. We patch it to also emit a projection-event with
+    # type 'call' so the overlay can display the actual caller ID.
     #
-    # Idempotent: uses regex to match whether or not the patch is already present.
+    # Tolerant regex: captures the minified payload variable name (\2) and
+    # accepts == or === and any quote style, since the exact shape varies by
+    # build. Idempotent: optionally matches an already-applied patch.
     aapresence_pattern = re.compile(
-        r"(signalStrength:typeof t\.signalStrength==`number`\?t\.signalStrength:void 0\}\);)"
-        r"(?:if\(t\.callState\)\{this\.emitProjectionEvent\(\{type:`call`,payload:\{callState:t\.callState,caller:t\.caller\|\|``\}\}\)\})?"
+        r"(signalStrength:typeof (\w+)\.signalStrength={2,3}[`\"']number[`\"']\?[^,;]+?:void 0\}\);?)"
+        r"(?:if\(\w+\.callState\)\{this\.emitProjectionEvent\(\{type:[`\"']call[`\"'],payload:\{callState:\w+\.callState,caller:\w+\.caller\|\|(?:``|''|\"\")\}\}\)\})?"
         r"(return\})"
     )
-    aapresence_replacement = (
-        r"\1"
-        "if(t.callState){this.emitProjectionEvent({type:`call`,payload:{callState:t.callState,caller:t.caller||``}})}"
-        r"\2"
-    )
+
+    def _aapresence_repl(m):
+        var = m.group(2)
+        return (
+            m.group(1)
+            + "if(" + var + ".callState){this.emitProjectionEvent({type:`call`,payload:{callState:"
+            + var + ".callState,caller:" + var + ".caller||``}})}"
+            + m.group(3)
+        )
 
     aamatch = aapresence_pattern.search(main_js)
     if aamatch:
-        main_js = aapresence_pattern.sub(aapresence_replacement, main_js, count=1)
-        print(f"Patched onAaPresence: callState/caller forwarding added")
+        main_js = aapresence_pattern.sub(_aapresence_repl, main_js, count=1)
+        print(f"Patched onAaPresence: callState/caller forwarding added (payload var: {aamatch.group(2)})")
     else:
         print(f"WARNING: Could not find onAaPresence handler — caller ID patch skipped")
+        # Dump context around signalStrength occurrences so the pattern can be
+        # fixed for this build without another round-trip.
+        for i, sm in enumerate(re.finditer(r'signalStrength', main_js)):
+            if i >= 3:
+                break
+            s = max(0, sm.start() - 300)
+            print(f"--- signalStrength context {i} ---")
+            print(main_js[s:sm.start() + 300])
 
 # --- Rebuild the ASAR ---
 all_files_sorted = sorted(files, key=lambda x: x[1])
