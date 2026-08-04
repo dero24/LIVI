@@ -18,6 +18,7 @@ export interface GhAsset {
   name?: string
   browser_download_url?: string
 }
+
 export interface GhRelease {
   tag_name?: string
   name?: string
