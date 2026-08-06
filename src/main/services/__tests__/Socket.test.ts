@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events'
 
 class MockHttpServer extends EventEmitter {
-  listen = vi.fn((_port: number, cb: () => void) => cb())
+  listen = vi.fn((..._args: unknown[]) => {
+    const cb = _args.find((a) => typeof a === 'function') as (() => void) | undefined
+    cb?.()
+  })
   close = vi.fn((cb?: () => void) => cb?.())
 }
 

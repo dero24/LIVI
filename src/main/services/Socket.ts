@@ -56,13 +56,16 @@ export class TelemetrySocket {
 
   private startServer(): void {
     this.httpServer = http.createServer()
-    this.io = new Server(this.httpServer, { cors: { origin: '*' } })
+    // [hub] M5 (C5): the telemetry socket carries no auth and accepts `telemetry:push`.
+    // It must never be reachable off the box. Bind loopback and drop the `*` CORS origin
+    // so a LAN host cannot open a cross-origin socket to it.
+    this.io = new Server(this.httpServer, { cors: { origin: false } })
     this.setupListeners()
     this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
       console.error(`[TelemetrySocket] server error on port ${this.port}:`, err.message)
     })
-    this.httpServer.listen(this.port, () => {
-      console.log(`[TelemetrySocket] Server listening on port ${this.port}`)
+    this.httpServer.listen(this.port, '127.0.0.1', () => {
+      console.log(`[TelemetrySocket] Server listening on 127.0.0.1:${this.port}`)
     })
   }
 
