@@ -7,7 +7,10 @@ export enum RoutePath {
   Media = 'media',
   Devices = 'devices',
   Settings = 'settings',
-  Telemetry = 'telemetry'
+  Telemetry = 'telemetry',
+  // [hub] the HubShell surface. Additive for now; becomes the default surface in
+  // the Phase 1.8 root-swap once projection-plane coexistence (§12.2) is wired.
+  Hub = 'hub'
 }
 
 type BivariantCallback<T extends (...args: never[]) => unknown> = {

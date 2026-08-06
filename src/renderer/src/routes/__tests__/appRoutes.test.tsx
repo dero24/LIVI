@@ -15,6 +15,9 @@ vi.mock('../../components/pages/settings/SettingsPage', () => ({
 vi.mock('../schemas/schema', () => ({
   settingsRoutes: { children: [{ path: 'general' }] }
 }))
+vi.mock('../../hub/HubShell', () => ({
+  HubShell: () => null
+}))
 
 import { appRoutes } from '../appRoutes'
 
@@ -23,6 +26,13 @@ describe('appRoutes', () => {
     const root = appRoutes[0]
     const paths = (root.children ?? []).map((r: any) => r.path)
     expect(paths).toEqual(['/home', '/telemetry', '/cluster', '/media', '/camera', '/settings/*'])
+  })
+
+  test('exposes the additive /hub route alongside the Layout root', async () => {
+    const topLevelPaths = appRoutes.map((r: any) => r.path)
+    expect(topLevelPaths).toContain('/hub')
+    // The Layout root stays first so nothing that indexes appRoutes[0] regresses.
+    expect(appRoutes[0].path).toBe('/')
   })
 
   test('falls back to empty settings children when settingsRoutes is missing', async () => {

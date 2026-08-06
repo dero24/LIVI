@@ -148,6 +148,11 @@ export type Config = {
 
   apkVer: string
 
+  // [hub] M14: when true, LIVI's own head-unit UI is reachable (service mode);
+  // normally the appliance shows only the HubShell. Defaults false. Night
+  // schedule and Phase-5 call* fields join here as those phases land.
+  hubServiceMode?: boolean
+
   // Theme / vehicle identity
   darkMode: boolean
   nightMode: boolean
