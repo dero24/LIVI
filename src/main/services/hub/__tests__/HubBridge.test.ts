@@ -8,6 +8,7 @@
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { ProjectionEvent } from '../../projection/services/types'
 import { HubBridge, type HubBridgeHost } from '../HubBridge'
 
