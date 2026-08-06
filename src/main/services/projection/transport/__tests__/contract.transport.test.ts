@@ -60,11 +60,12 @@ function makeArbiter(overrides: Partial<DepStubs> = {}) {
 }
 
 function appleDevice(): Device {
-  return { deviceDescriptor: { idVendor: 0x05ac, idProduct: 0x1234 } } as unknown as Device
+  // TransportArbiter reads vendorId directly from the device object
+  return { vendorId: 0x05ac, deviceDescriptor: { idVendor: 0x05ac, idProduct: 0x1234 } } as unknown as Device
 }
 
 function androidDevice(): Device {
-  return { deviceDescriptor: { idVendor: 0x18d1, idProduct: 0x4ee1 } } as unknown as Device
+  return { vendorId: 0x18d1, deviceDescriptor: { idVendor: 0x18d1, idProduct: 0x4ee1 } } as unknown as Device
 }
 
 describe('contract.transport', () => {

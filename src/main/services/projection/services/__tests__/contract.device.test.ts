@@ -63,12 +63,16 @@ describe('contract.device', () => {
   })
 
   describe('deviceId() changes when btMac is added to a usbSerial-only entry (C1)', () => {
-    it('deviceId is the usbSerial when only usbSerial is set', () => {
+    // Upstream's deviceId() returns btMac ?? usbUdid ?? wifiMac ?? instanceId ?? ''
+    // It does NOT include usbSerial in the priority chain. A usbSerial-only
+    // entry therefore has deviceId === '' until a btMac (or usbUdid/wifiMac/
+    // instanceId) is added. This is the instability C1 documents.
+    it('deviceId is empty when only usbSerial is set', () => {
       const reg = mkRegistry()
       reg.noteDevice({ usbSerial: 'SER123', name: 'Phone', protocol: 'androidauto' })
       const entries = reg.list()
       expect(entries).toHaveLength(1)
-      expect(reg.deviceId(entries[0])).toBe('SER123')
+      expect(reg.deviceId(entries[0])).toBe('')
     })
 
     it('deviceId becomes btMac when btMac is later added', () => {
@@ -78,20 +82,22 @@ describe('contract.device', () => {
       reg.noteDevice({ usbSerial: 'SER123', btMac: 'AA:BB:CC:DD:EE:FF', protocol: 'androidauto' })
       const entries = reg.list()
       expect(entries).toHaveLength(1)
-      // deviceId prefers btMac over usbSerial
+      // deviceId changes from '' to the btMac — this is the C1 instability
       expect(reg.deviceId(entries[0])).toBe('aa:bb:cc:dd:ee:ff')
     })
   })
 
   describe('DeviceView.session is an ordinal that renumbers when an earlier session closes (C2)', () => {
+    // buildDeviceViews passes {btMac, wifiMac, usbUdid, instanceId, ip} to
+    // byDevice — it does NOT pass usbSerial. Use instanceId so the match works.
     it('assigns session ordinals based on session order', () => {
       const reg = mkRegistry()
-      reg.noteDevice({ usbSerial: 'SER001', name: 'Phone1', protocol: 'androidauto' })
-      reg.noteDevice({ usbSerial: 'SER002', name: 'Phone2', protocol: 'androidauto' })
+      reg.noteDevice({ instanceId: 'inst-1', name: 'Phone1', protocol: 'androidauto' })
+      reg.noteDevice({ instanceId: 'inst-2', name: 'Phone2', protocol: 'androidauto' })
 
       const sessions = new SessionManager({ route: () => {} })
-      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
-      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER002' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-1' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-2' })
 
       const ctrl = mkController(reg, sessions)
       const views = ctrl.getDevices()
@@ -103,12 +109,12 @@ describe('contract.device', () => {
 
     it('renumbers when an earlier session closes', () => {
       const reg = mkRegistry()
-      reg.noteDevice({ usbSerial: 'SER001', name: 'Phone1', protocol: 'androidauto' })
-      reg.noteDevice({ usbSerial: 'SER002', name: 'Phone2', protocol: 'androidauto' })
+      reg.noteDevice({ instanceId: 'inst-1', name: 'Phone1', protocol: 'androidauto' })
+      reg.noteDevice({ instanceId: 'inst-2', name: 'Phone2', protocol: 'androidauto' })
 
       const sessions = new SessionManager({ route: () => {} })
-      const s1 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
-      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER002' })
+      const s1 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-1' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-2' })
 
       const ctrl = mkController(reg, sessions)
       // Close the first session — the second should now be ordinal 1

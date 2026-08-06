@@ -67,10 +67,12 @@ function createSubject() {
   return { audio, sendProjectionEvent }
 }
 
-function mkAudioData(cmd: number, opts: { data?: Int16Array; decodeType?: number; audioType?: number } = {}): unknown {
+// Command-only messages have `command` (not `cmd`) and NO `data` field.
+// The code path checks `if (msg.data)` first and returns early; only
+// messages without `data` reach the command-handling block.
+function mkAudioCommand(command: number, opts: { decodeType?: number; audioType?: number } = {}): unknown {
   return {
-    cmd,
-    data: opts.data ?? new Int16Array([0, 0, 0, 0]),
+    command,
     decodeType: opts.decodeType ?? 1,
     audioType: opts.audioType ?? 0
   }
@@ -80,7 +82,7 @@ describe('contract.audio', () => {
   describe('AudioAttentionStart emits attention {phase:"incoming"} (Tier 2 floor)', () => {
     it('emits an attention event with kind=call, active=true, phase=incoming', () => {
       const { audio, sendProjectionEvent } = createSubject()
-      audio.handleAudioData(mkAudioData(1)) // AudioAttentionStart
+      audio.handleAudioData(mkAudioCommand(1)) // AudioAttentionStart
       const attentionCall = sendProjectionEvent.mock.calls.find(
         (c: unknown[]) => (c[0] as { type: string }).type === 'attention'
       )
@@ -93,8 +95,8 @@ describe('contract.audio', () => {
 
     it('does not emit a second attention for repeated AudioAttentionStart', () => {
       const { audio, sendProjectionEvent } = createSubject()
-      audio.handleAudioData(mkAudioData(1)) // first
-      audio.handleAudioData(mkAudioData(1)) // second — should be deduped
+      audio.handleAudioData(mkAudioCommand(1)) // first
+      audio.handleAudioData(mkAudioCommand(1)) // second — should be deduped
       const attentionCalls = sendProjectionEvent.mock.calls.filter(
         (c: unknown[]) => (c[0] as { type: string }).type === 'attention'
       )
@@ -108,7 +110,7 @@ describe('contract.audio', () => {
       // AudioPhonecallStart is cmd 15; it needs a config message with
       // disableAudioOutput=false and micType=0 to not early-return,
       // but the key assertion is that no attention event is emitted.
-      audio.handleAudioData(mkAudioData(15, { decodeType: 2 }))
+      audio.handleAudioData(mkAudioCommand(15, { decodeType: 2 }))
       const attentionCalls = sendProjectionEvent.mock.calls.filter(
         (c: unknown[]) => (c[0] as { type: string }).type === 'attention'
       )
@@ -120,9 +122,9 @@ describe('contract.audio', () => {
     it('emits incoming on AudioAttentionStart and ended on AudioPhonecallStop', () => {
       const { audio, sendProjectionEvent } = createSubject()
       // 1. Incoming call
-      audio.handleAudioData(mkAudioData(1)) // AudioAttentionStart
+      audio.handleAudioData(mkAudioCommand(1)) // AudioAttentionStart
       // 2. Call ends
-      audio.handleAudioData(mkAudioData(3)) // AudioPhonecallStop
+      audio.handleAudioData(mkAudioCommand(3)) // AudioPhonecallStop
       const attentionCalls = sendProjectionEvent.mock.calls.filter(
         (c: unknown[]) => (c[0] as { type: string }).type === 'attention'
       )
@@ -141,7 +143,7 @@ describe('contract.audio', () => {
   describe.skip('callState emits with sessionIndex (M1)', () => {
     it('attention events carry a sessionIndex', () => {
       const { audio, sendProjectionEvent } = createSubject()
-      audio.handleAudioData(mkAudioData(1))
+      audio.handleAudioData(mkAudioCommand(1))
       const attentionCall = sendProjectionEvent.mock.calls.find(
         (c: unknown[]) => (c[0] as { type: string }).type === 'attention'
       )
