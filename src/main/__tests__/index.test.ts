@@ -50,6 +50,12 @@ vi.mock('@main/services/Socket', () => ({
   })
 }))
 
+vi.mock('@main/services/hub/HubBridge', () => ({
+  HubBridge: vi.fn().mockImplementation(function () {
+    return { start: vi.fn(), stop: vi.fn(async () => undefined) }
+  })
+}))
+
 vi.mock('@main/services/telemetry/setupTelemetry', () => ({
   setupTelemetry: vi.fn()
 }))

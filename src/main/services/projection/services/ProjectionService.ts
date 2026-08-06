@@ -595,10 +595,35 @@ export class ProjectionService {
     if (becameAvailable) this.autoStartIfNeeded().catch(console.error)
   }
 
+  // [hub] Taps on the projection event stream (the HubBridge subscribes here so
+  // `hubd` receives every ProjectionEvent). Taps are best-effort and never affect
+  // the renderer path.
+  private readonly hubEventTaps = new Set<(e: ProjectionEvent) => void>()
+
+  // [hub] Register a listener for every projection event. Returns an unsubscribe fn.
+  public onHubEvent(listener: (e: ProjectionEvent) => void): () => void {
+    this.hubEventTaps.add(listener)
+    return () => this.hubEventTaps.delete(listener)
+  }
+
+  // [hub] Public wrapper so the bridge can rotate the active session without
+  // reaching into the private SessionManager.
+  public cycleSession(): void {
+    this.sessions.activateNext()
+  }
+
   // Single emit point for `projection-event`
   private emitProjectionEvent(payload: ProjectionEvent): void {
     this.webContents?.send('projection-event', payload)
     broadcastToSecondaryRenderers('projection-event', payload)
+    // [hub] fan out to the bridge last, guarded so a tap error cannot break the UI.
+    for (const tap of this.hubEventTaps) {
+      try {
+        tap(payload)
+      } catch (e) {
+        console.warn('[ProjectionService] hub event tap threw (ignored)', e)
+      }
+    }
   }
 
   // Reflects the current HEVC decode capability seeded into each AA session

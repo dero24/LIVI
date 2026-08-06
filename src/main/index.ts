@@ -16,6 +16,7 @@ import {
   stopSystemVolumeMonitor
 } from '@main/services/audio/SystemVolume'
 import { checkAndInstallGvfsGuard, startPhoneSuppression } from '@main/services/gvfsPhoneGuard'
+import { HubBridge } from '@main/services/hub/HubBridge'
 import { checkMissingPackages } from '@main/services/packageCheck'
 import { checkAndInstallHelperSudoers } from '@main/services/projection/driver/helper/helperSudoers'
 import { ProjectionService } from '@main/services/projection/services/ProjectionService'
@@ -82,6 +83,26 @@ app.whenReady().then(async () => {
   setupAppIdentity()
   registerAppProtocol()
   registerIpc(runtimeState, services)
+
+  // [hub] M6: stand up the HubBridge — the Unix-socket channel to `hubd`. It only
+  // marshals a narrow, audited command allow-list and taps the projection event
+  // stream; projection works whether or not `hubd` is attached.
+  const hubBridge = new HubBridge({
+    getDevices: () => projectionService.getDevices(),
+    selectDevice: (id) => projectionService.selectDevice(id),
+    cycleSession: () => projectionService.cycleSession(),
+    forgetDevice: (id) => projectionService.forgetDevice(id),
+    connectPairedDevice: (mac) => projectionService.connectPairedDevice(mac),
+    getTransportState: () => projectionService.getTransportState(),
+    switchTransport: () => projectionService.switchTransport(),
+    getVersion: () => app.getVersion(),
+    onEvent: (listener) => projectionService.onHubEvent(listener)
+  })
+  hubBridge.start()
+  app.on('will-quit', () => {
+    void hubBridge.stop()
+  })
+
   createMainWindow(runtimeState, services)
   setupSecondaryWindows(runtimeState)
 
