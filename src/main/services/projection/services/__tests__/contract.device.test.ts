@@ -125,27 +125,41 @@ describe('contract.device', () => {
     })
   })
 
-  // M2/M3: DeviceView will carry `aliases` and `sessionIndex` fields.
-  // These fields do not exist in upstream yet — skip until the hub layer adds them.
-  describe.skip('DeviceView carries aliases and sessionIndex (M2/M3)', () => {
-    it('DeviceView has an aliases field', () => {
+  // M2/M3: DeviceView carries `aliases` (the full id set, for stable phoneId
+  // resolution) and `sessionIndex` (the stable session index, unlike `session`).
+  describe('DeviceView carries aliases and sessionIndex (M2/M3)', () => {
+    it('DeviceView has an aliases field exposing every known id', () => {
       const reg = mkRegistry()
-      reg.noteDevice({ usbSerial: 'SER001', name: 'Phone1', protocol: 'androidauto' })
+      reg.noteDevice({
+        usbSerial: 'SER001',
+        instanceId: 'inst-1',
+        name: 'Phone1',
+        protocol: 'androidauto'
+      })
       const sessions = new SessionManager({ route: () => {} })
-      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-1' })
       const ctrl = mkController(reg, sessions)
       const views = ctrl.getDevices()
       expect(views[0]).toHaveProperty('aliases')
+      // usbSerial is NOT in deviceId()'s priority chain (C1) but MUST be in aliases.
+      expect(views[0].aliases?.usbSerial).toBe('SER001')
+      expect(views[0].aliases?.instanceId).toBe('inst-1')
     })
 
-    it('DeviceView has a sessionIndex field', () => {
+    it('sessionIndex is the stable ProjectionSession.index, not the ordinal', () => {
       const reg = mkRegistry()
-      reg.noteDevice({ usbSerial: 'SER001', name: 'Phone1', protocol: 'androidauto' })
+      reg.noteDevice({ instanceId: 'inst-1', name: 'Phone1', protocol: 'androidauto' })
+      reg.noteDevice({ instanceId: 'inst-2', name: 'Phone2', protocol: 'androidauto' })
       const sessions = new SessionManager({ route: () => {} })
-      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
+      const s1 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-1' })
+      const s2 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { instanceId: 'inst-2' })
+      // Close the first session: the ordinal `session` renumbers (C2), but
+      // sessionIndex stays pinned to the underlying stable index.
+      sessions.close(s1.index)
       const ctrl = mkController(reg, sessions)
-      const views = ctrl.getDevices()
-      expect(views[0]).toHaveProperty('sessionIndex')
+      const v2 = ctrl.getDevices().find((v) => v.name === 'Phone2')
+      expect(v2?.sessionIndex).toBe(s2.index)
+      expect(v2?.session).toBe(1) // ordinal renumbered
     })
   })
 })

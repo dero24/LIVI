@@ -183,7 +183,18 @@ export class DeviceController {
         batteryCharging: e.batteryCharging,
         signalStrength: e.signalStrength,
         carrierName: e.carrierName,
-        session: sess ? ordered.indexOf(sess) + 1 || undefined : undefined
+        session: sess ? ordered.indexOf(sess) + 1 || undefined : undefined,
+        // [hub] M2: full alias set (from the registry entry) so the hub can resolve
+        // this device to its own stable phoneId; and the stable session index.
+        aliases: {
+          btMac: e.btMac,
+          wifiMac: e.wifiMac,
+          usbUdid: e.usbUdid,
+          usbSerial: e.usbSerial,
+          instanceId: e.instanceId,
+          ip: e.currentIp
+        },
+        sessionIndex: sess?.index
       }
       out.push(view)
       lastSeenOf.set(view, e.lastSeen ?? 0)
