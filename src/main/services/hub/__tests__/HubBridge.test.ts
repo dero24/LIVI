@@ -97,8 +97,19 @@ class TestClient {
   }
 }
 
-function mkHost(): { host: HubBridgeHost; emit: (e: ProjectionEvent) => void } {
+type MkHost = {
+  host: HubBridgeHost
+  emit: (e: ProjectionEvent) => void
+  saved: Record<string, unknown>[]
+  pushedState: unknown[]
+  restarted: () => number
+}
+
+function mkHost(): MkHost {
   const taps = new Set<(e: ProjectionEvent) => void>()
+  const saved: Record<string, unknown>[] = []
+  const pushedState: unknown[] = []
+  let restarts = 0
   const host: HubBridgeHost = {
     getDevices: () => [{ id: 'aa:bb', name: 'Pixel', sessionIndex: 1 }],
     selectDevice: (id) => ({ ok: id === 'aa:bb' }),
@@ -108,12 +119,29 @@ function mkHost(): { host: HubBridgeHost; emit: (e: ProjectionEvent) => void } {
     getTransportState: () => ({ active: 'aa' }),
     switchTransport: async () => ({ ok: true, active: 'cp' }),
     getVersion: () => '8.0.0',
+    getSettings: () => ({ darkMode: true }),
+    saveSettings: (partial) => {
+      saved.push(partial)
+      return { ok: true }
+    },
+    restartApp: () => {
+      restarts += 1
+    },
+    onPushState: (state) => {
+      pushedState.push(state)
+    },
     onEvent: (listener) => {
       taps.add(listener)
       return () => taps.delete(listener)
     }
   }
-  return { host, emit: (e) => taps.forEach((t) => t(e)) }
+  return {
+    host,
+    emit: (e) => taps.forEach((t) => t(e)),
+    saved,
+    pushedState,
+    restarted: () => restarts
+  }
 }
 
 describe('HubBridge', () => {
@@ -178,6 +206,43 @@ describe('HubBridge', () => {
     emit({ type: 'unplugged' })
     await new Promise((r) => setTimeout(r, 50))
     expect(client.events).toHaveLength(0)
+    client.close()
+  })
+
+  it('marshals settings, restart and pushState commands to the host', async () => {
+    socketPath = uniqueSocketPath()
+    const h = mkHost()
+    bridge = new HubBridge(h.host, socketPath)
+    bridge.start()
+    const client = await TestClient.connect(socketPath)
+
+    const got = await client.cmd('getSettings')
+    expect(got.result).toEqual({ darkMode: true })
+
+    const saved = await client.cmd('saveSettings', { settings: { darkMode: false } })
+    expect(saved.ok).toBe(true)
+    expect(h.saved).toEqual([{ darkMode: false }])
+
+    const pushed = await client.cmd('pushState', { state: { rev: 3 } })
+    expect(pushed.ok).toBe(true)
+    expect(h.pushedState).toEqual([{ rev: 3 }])
+
+    const restarted = await client.cmd('restartApp')
+    expect(restarted.ok).toBe(true)
+    expect(h.restarted()).toBe(1)
+    client.close()
+  })
+
+  it('broadcastIntent reaches a subscribed connection as an {ev:intent} frame', async () => {
+    socketPath = uniqueSocketPath()
+    bridge = new HubBridge(mkHost().host, socketPath)
+    bridge.start()
+    const client = await TestClient.connect(socketPath)
+    await client.cmd('subscribe')
+    bridge.broadcastIntent({ type: 'phone.rename', phoneId: 'P', name: 'Kitchen' })
+    const events = await client.waitForEvents(1)
+    expect(events[0].ev).toBe('intent')
+    expect((events[0].payload as { type: string }).type).toBe('phone.rename')
     client.close()
   })
 

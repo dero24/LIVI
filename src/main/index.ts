@@ -8,6 +8,7 @@ import { setupLifecycle } from '@main/app/lifecycle'
 installMainProcessErrorHandlers()
 
 import { registerIpc } from '@main/ipc'
+import { broadcastHubState, registerHubIpc } from '@main/ipc/hub'
 import { configEvents, saveSettings } from '@main/ipc/utils'
 import { registerAppProtocol } from '@main/protocol/appProtocol'
 import {
@@ -96,9 +97,19 @@ app.whenReady().then(async () => {
     getTransportState: () => projectionService.getTransportState(),
     switchTransport: () => projectionService.switchTransport(),
     getVersion: () => app.getVersion(),
+    getSettings: () => runtimeState.config,
+    saveSettings: (partial) => {
+      saveSettings(runtimeState, partial as Partial<Config>)
+      return { ok: true }
+    },
+    restartApp: () => {
+      void restartApp(runtimeState, services)
+    },
+    onPushState: (state) => broadcastHubState(state),
     onEvent: (listener) => projectionService.onHubEvent(listener)
   })
   hubBridge.start()
+  registerHubIpc(hubBridge)
   app.on('will-quit', () => {
     void hubBridge.stop()
   })

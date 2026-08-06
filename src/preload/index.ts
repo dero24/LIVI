@@ -287,3 +287,19 @@ const appApi = {
 }
 
 contextBridge.exposeInMainWorld('app', appApi)
+
+// [hub] M8 — window.hub: the renderer's view of the reachability plane.
+//   onState(cb)  subscribe to HubState pushes (hubd -> main -> here)
+//   getState()   pull the last pushed HubState (for a fresh renderer)
+//   intent(p)    send an intent (renderer -> main -> HubBridge -> hubd)
+const hubApi = {
+  onState: (cb: (state: unknown) => void): (() => void) => {
+    const handler = (_e: IpcRendererEvent, state: unknown): void => cb(state)
+    ipcRenderer.on('hub:state', handler)
+    return () => ipcRenderer.removeListener('hub:state', handler)
+  },
+  getState: (): Promise<unknown> => ipcRenderer.invoke('hub:getState'),
+  intent: (payload: unknown): Promise<{ ok: boolean }> => ipcRenderer.invoke('hub:intent', payload)
+}
+
+contextBridge.exposeInMainWorld('hub', hubApi)

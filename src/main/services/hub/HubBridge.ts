@@ -32,6 +32,11 @@ export interface HubBridgeHost {
   getTransportState(): unknown
   switchTransport(): Promise<{ ok: boolean; active: unknown }>
   getVersion?(): string | null
+  getSettings(): unknown
+  saveSettings(partial: Record<string, unknown>): { ok: boolean }
+  restartApp(): void
+  /** hubd pushes assembled HubState here; main forwards it to renderers. */
+  onPushState(state: unknown): void
   /** Register a tap on the projection event stream. Returns an unsubscribe fn. */
   onEvent(listener: (e: ProjectionEvent) => void): () => void
 }
@@ -122,6 +127,18 @@ export class HubBridge {
     }
   }
 
+  /** Forward a renderer intent to hubd as an `{ev:'intent'}` frame. This is the
+   *  renderer -> main -> bridge -> hubd path (M7). Safe no-op if hubd is absent. */
+  broadcastIntent(payload: unknown): void {
+    if (this.subscribers.size === 0) return
+    const frame = `${JSON.stringify({ ev: 'intent', payload })}\n`
+    for (const s of this.subscribers) {
+      try {
+        s.write(frame)
+      } catch {}
+    }
+  }
+
   private async handleLine(sock: net.Socket, line: string): Promise<void> {
     let msg: { id?: unknown; cmd?: string; args?: Record<string, unknown> }
     try {
@@ -155,6 +172,18 @@ export class HubBridge {
           return reply({ ...(await this.host.switchTransport()) })
         case 'getVersion':
           return reply({ ok: true, result: this.host.getVersion?.() ?? null })
+        case 'getSettings':
+          return reply({ ok: true, result: this.host.getSettings() })
+        case 'saveSettings':
+          return reply({
+            ...this.host.saveSettings((args.settings as Record<string, unknown>) ?? {})
+          })
+        case 'restartApp':
+          this.host.restartApp()
+          return reply({ ok: true })
+        case 'pushState':
+          this.host.onPushState(args.state)
+          return reply({ ok: true })
         case 'ping':
           return reply({ ok: true, pong: true })
         default:
