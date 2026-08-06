@@ -10,7 +10,6 @@
  */
 import type { IPhoneDriver } from '../../driver/IPhoneDriver'
 import { SessionManager } from '../SessionManager'
-import type { SessionDeviceIds } from '../SessionManager'
 
 function mkDriver(): IPhoneDriver {
   return {} as unknown as IPhoneDriver

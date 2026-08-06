@@ -90,8 +90,8 @@ describe('contract.device', () => {
       reg.noteDevice({ usbSerial: 'SER002', name: 'Phone2', protocol: 'androidauto' })
 
       const sessions = new SessionManager({ route: () => {} })
-      const s1 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
-      const s2 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER002' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER002' })
 
       const ctrl = mkController(reg, sessions)
       const views = ctrl.getDevices()
@@ -108,7 +108,7 @@ describe('contract.device', () => {
 
       const sessions = new SessionManager({ route: () => {} })
       const s1 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER001' })
-      const s2 = sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER002' })
+      sessions.upsert(mkDriver(), 'androidauto', 'usb', { usbSerial: 'SER002' })
 
       const ctrl = mkController(reg, sessions)
       // Close the first session — the second should now be ordinal 1
