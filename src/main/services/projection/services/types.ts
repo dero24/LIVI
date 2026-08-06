@@ -6,7 +6,7 @@ import type { DongleFwResponse } from '../ipc/types'
 import type { Command, NavigationData, PhoneType } from '../messages'
 import { MediaType, NavigationMetaType } from '../messages'
 import type { TransportSnapshot } from '../transport/types'
-import type { SessionProtocol, VideoCodec } from './SessionManager'
+import type { SessionDeviceIds, SessionProtocol, VideoCodec } from './SessionManager'
 
 export type PendingStartupConnectTarget = {
   btMac: string
@@ -120,6 +120,18 @@ export type ProjectionEvent =
         kind: 'call' | 'voiceAssistant' | 'nav'
         active: boolean
         phase?: 'incoming' | 'ended'
+      }
+    }
+  // [hub] M1: first-class call lifecycle event carrying phase AND device identity.
+  // Unlike `attention`, this has an 'active' phase and attributes the call to a
+  // specific projection session (§3.6, §9 Tier 2). `attention` is left untouched.
+  | {
+      type: 'callState'
+      payload: {
+        phase: 'incoming' | 'active' | 'ended'
+        sessionIndex: number | null
+        aliases?: SessionDeviceIds
+        at: string
       }
     }
   | { type: 'failure' }

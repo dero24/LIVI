@@ -3,6 +3,7 @@ import { AudioOutput, downsampleToMono, Microphone } from '@main/services/audio'
 import type { Config } from '@shared/types'
 import { AudioCommand } from '@shared/types/ProjectionEnums'
 import { AudioData } from '../messages'
+import type { SessionDeviceIds } from './SessionManager'
 import type { ProjectionEvent } from './types'
 
 export type PlayerKey = string
@@ -26,6 +27,9 @@ type SendChunked = (
 ) => void
 
 type SendMicPcm = (pcm: Int16Array, decodeType: number) => void
+
+// [hub] M1: identity of the session a call belongs to, resolved lazily at emit time.
+type GetCallContext = () => { sessionIndex: number | null; aliases?: SessionDeviceIds }
 
 export class ProjectionAudio {
   // One AudioOutput per (sampleRate, channels). The OS audio sink (PulseAudio
@@ -113,12 +117,34 @@ export class ProjectionAudio {
 
   private visualizerWindows = new Set<number>()
 
+  // [hub] M1: call lifecycle phase tracked so we emit each `callState` transition once.
+  private callStatePhase: 'incoming' | 'active' | 'ended' | null = null
+
   constructor(
     private readonly getConfig: () => Config,
     private readonly sendProjectionEvent: SendProjectionEvent,
     private readonly sendChunked: SendChunked,
-    private readonly sendMicPcm: SendMicPcm
+    private readonly sendMicPcm: SendMicPcm,
+    // [hub] M1: optional so upstream call sites and unit tests can omit it.
+    private readonly getCallContext?: GetCallContext
   ) {}
+
+  // [hub] M1: emit the `callState` event beside `attention`. Deduped per phase so a
+  // repeated command never emits twice. Carries the stable sessionIndex and aliases.
+  private emitCallState(phase: 'incoming' | 'active' | 'ended') {
+    if (this.callStatePhase === phase) return
+    this.callStatePhase = phase
+    const ctx = this.getCallContext?.()
+    this.sendProjectionEvent({
+      type: 'callState',
+      payload: {
+        phase,
+        sessionIndex: ctx?.sessionIndex ?? null,
+        aliases: ctx?.aliases,
+        at: new Date().toISOString()
+      }
+    })
+  }
 
   public setVisualizerEnabled(enabled: boolean, sourceId = -1) {
     if (enabled) this.visualizerWindows.add(sourceId)
@@ -178,6 +204,7 @@ export class ProjectionAudio {
     this.uiCallIncoming = false
     this.uiVoiceAssistantHintActive = false
     this.uiNavHintActive = false
+    this.callStatePhase = null // [hub] M1
   }
 
   // Called from ProjectionService when a projection session stops
@@ -213,6 +240,7 @@ export class ProjectionAudio {
     this.uiCallIncoming = false
     this.uiVoiceAssistantHintActive = false
     this.uiNavHintActive = false
+    this.callStatePhase = null // [hub] M1
   }
 
   public setInitialVolumes(volumes: Partial<VolumeState>) {
@@ -456,6 +484,7 @@ export class ProjectionAudio {
           this.uiCallIncoming = true
           this.emitAttention('call', true, { phase: 'incoming' })
         }
+        this.emitCallState('incoming') // [hub] M1
       }
 
       if (cmd === AudioCommand.AudioPhonecallStop) {
@@ -667,6 +696,7 @@ export class ProjectionAudio {
         } else if (cmd === AudioCommand.AudioPhonecallStart) {
           this.phonecallActive = true
           this.voiceAssistantActive = false
+          this.emitCallState('active') // [hub] M1
         }
 
         // While voice is active, keep music muted via gate.
@@ -728,6 +758,7 @@ export class ProjectionAudio {
           }
         } else if (cmd === AudioCommand.AudioPhonecallStop) {
           this.phonecallActive = false
+          this.emitCallState('ended') // [hub] M1 (fires for both incoming-answered and outgoing calls)
         }
 
         this._mic?.stop()

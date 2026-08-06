@@ -1240,6 +1240,11 @@ export class ProjectionService {
       },
       (pcm, decodeType) => {
         this.driver.sendPhoneAudio?.(pcm, decodeType)
+      },
+      // [hub] M1: attribute callState to the active session (stable index + aliases).
+      () => {
+        const a = this.sessions.active()
+        return { sessionIndex: a?.index ?? null, aliases: a?.device }
       }
     )
 

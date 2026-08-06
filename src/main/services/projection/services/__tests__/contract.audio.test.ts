@@ -138,17 +138,46 @@ describe('contract.audio', () => {
     })
   })
 
-  // M1: callState will emit a sessionIndex alongside the attention events.
-  // This field does not exist in upstream yet — skip until the hub layer adds it.
-  describe.skip('callState emits with sessionIndex (M1)', () => {
-    it('attention events carry a sessionIndex', () => {
-      const { audio, sendProjectionEvent } = createSubject()
+  // M1: `callState` is a first-class event separate from `attention`. It has an
+  // 'active' phase (which `attention` lacks) and carries device identity. `attention`
+  // stays byte-identical (asserted by the C3 test above).
+  describe('callState emits incoming -> active -> ended with sessionIndex (M1)', () => {
+    const callStates = (calls: unknown[][]) =>
+      calls
+        .filter((c) => (c[0] as { type: string }).type === 'callState')
+        .map((c) => (c[0] as { payload: Record<string, unknown> }).payload)
+
+    it('emits incoming on AudioAttentionStart, carrying a sessionIndex field', () => {
+      const { sendProjectionEvent, audio } = createSubject()
+      audio.handleAudioData(mkAudioCommand(1)) // AudioAttentionStart
+      const states = callStates(sendProjectionEvent.mock.calls)
+      expect(states).toHaveLength(1)
+      expect(states[0].phase).toBe('incoming')
+      expect(states[0]).toHaveProperty('sessionIndex')
+    })
+
+    it('emits active on AudioPhonecallStart (a phase attention never has, C3)', () => {
+      const { sendProjectionEvent, audio } = createSubject()
+      audio.handleAudioData(mkAudioCommand(15, { decodeType: 2 })) // AudioPhonecallStart
+      const states = callStates(sendProjectionEvent.mock.calls)
+      expect(states).toHaveLength(1)
+      expect(states[0].phase).toBe('active')
+    })
+
+    it('emits incoming -> active -> ended in order', () => {
+      const { sendProjectionEvent, audio } = createSubject()
+      audio.handleAudioData(mkAudioCommand(1)) // incoming
+      audio.handleAudioData(mkAudioCommand(15, { decodeType: 2 })) // active
+      audio.handleAudioData(mkAudioCommand(3)) // ended (AudioPhonecallStop)
+      const phases = callStates(sendProjectionEvent.mock.calls).map((p) => p.phase)
+      expect(phases).toEqual(['incoming', 'active', 'ended'])
+    })
+
+    it('dedupes a repeated phase (no duplicate callState)', () => {
+      const { sendProjectionEvent, audio } = createSubject()
       audio.handleAudioData(mkAudioCommand(1))
-      const attentionCall = sendProjectionEvent.mock.calls.find(
-        (c: unknown[]) => (c[0] as { type: string }).type === 'attention'
-      )
-      expect(attentionCall).toBeDefined()
-      expect((attentionCall![0] as { payload: Record<string, unknown> }).payload).toHaveProperty('sessionIndex')
+      audio.handleAudioData(mkAudioCommand(1))
+      expect(callStates(sendProjectionEvent.mock.calls)).toHaveLength(1)
     })
   })
 })
