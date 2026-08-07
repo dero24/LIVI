@@ -117,6 +117,8 @@ export class AaEventBridge {
   private naviApp: string | undefined
   private videoFocusEmitted = false
   private clusterFocusEmitted = false
+  // [hub] Phase 2.1: previous aggregate call state, to emit only on transitions.
+  callAggregateState: 'idle' | 'ringing' | 'active' = 'idle'
 
   constructor(
     private readonly aa: AAStack,
@@ -140,6 +142,7 @@ export class AaEventBridge {
       this.naviBag = {}
       this.naviActive = false
       this.naviApp = undefined
+      this.callAggregateState = 'idle' // [hub] Phase 2.1: reset on disconnect
 
       if (this.videoFocusEmitted) {
         this.emitCommand(CommandMapping.releaseVideoFocus)
@@ -228,6 +231,27 @@ export class AaEventBridge {
       const cmd = audioLifecycleCommand(channel, false)
       console.log(`[AaEventBridge] audio-stop ${channel} → AudioCommand=${AudioCommand[cmd]}`)
       deps.emitMessage(buildAudioCommandMessage(channel, cmd) as Message)
+    })
+
+    // [hub] Phase 2.1: AA Tier 2 callState. PhoneStatus.calls → aggregate state
+    // → AudioAttentionRinging / AudioPhonecallStart / AudioPhonecallStop. These
+    // are the commands ProjectionAudio watches to emit callState (§9.2 Tier 2).
+    // Mirrors CarPlay's CpSession.ts call-phase emission. We track the previous
+    // state here so only transitions produce a command.
+    aa.on('phone-call-state', (state: 'idle' | 'ringing' | 'active') => {
+      const prev = this.callAggregateState
+      this.callAggregateState = state
+      if (state === prev) return
+      const cmd =
+        state === 'ringing'
+          ? AudioCommand.AudioAttentionRinging
+          : state === 'active'
+            ? AudioCommand.AudioPhonecallStart
+            : AudioCommand.AudioPhonecallStop
+      console.log(
+        `[AaEventBridge] phone-call-state ${prev}→${state} → AudioCommand=${AudioCommand[cmd]}`
+      )
+      deps.emitMessage(buildAudioCommandMessage('phone', cmd) as Message)
     })
 
     aa.on('mic-start', () => deps.startMic('mic-start'))

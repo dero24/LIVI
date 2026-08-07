@@ -490,4 +490,60 @@ describe('AaEventBridge', () => {
     const meta = metas(emitMessage)[0]
     expect(asNavi(meta).navi?.NaviAPPName).toBe('Google Maps')
   })
+
+  // [hub] Phase 2.1: PhoneStatus.calls → phone-call-state → AudioCommand.
+  // These are the commands ProjectionAudio watches to emit callState (Tier 2).
+  describe('phone-call-state → AudioCommand (Tier 2 callState)', () => {
+    function audioCommands(emitMessage: Mock): AudioData[] {
+      return messagesOfType(emitMessage, MessageType.AudioData) as AudioData[]
+    }
+
+    test('idle→ringing emits AudioAttentionRinging', () => {
+      const { aa, emitMessage, bridge } = makeBridge()
+      bridge.callAggregateState = 'idle'
+      aa.emit('phone-call-state', 'ringing')
+      const cmds = audioCommands(emitMessage)
+      expect(cmds.length).toBe(1)
+      expect(cmds[0].command).toBe(14) // AudioAttentionRinging
+    })
+
+    test('ringing→active emits AudioPhonecallStart', () => {
+      const { aa, emitMessage, bridge } = makeBridge()
+      bridge.callAggregateState = 'ringing'
+      aa.emit('phone-call-state', 'active')
+      const cmds = audioCommands(emitMessage)
+      expect(cmds.length).toBe(1)
+      expect(cmds[0].command).toBe(4) // AudioPhonecallStart
+    })
+
+    test('active→idle emits AudioPhonecallStop', () => {
+      const { aa, emitMessage, bridge } = makeBridge()
+      bridge.callAggregateState = 'active'
+      aa.emit('phone-call-state', 'idle')
+      const cmds = audioCommands(emitMessage)
+      expect(cmds.length).toBe(1)
+      expect(cmds[0].command).toBe(5) // AudioPhonecallStop
+    })
+
+    test('repeated same state emits nothing (no duplicate commands)', () => {
+      const { aa, emitMessage, bridge } = makeBridge()
+      bridge.callAggregateState = 'ringing'
+      aa.emit('phone-call-state', 'ringing')
+      aa.emit('phone-call-state', 'ringing')
+      expect(audioCommands(emitMessage).length).toBe(0)
+    })
+
+    test('full lifecycle: ringing → active → idle emits exactly 3 commands in order', () => {
+      const { aa, emitMessage, bridge } = makeBridge()
+      bridge.callAggregateState = 'idle'
+      aa.emit('phone-call-state', 'ringing')
+      aa.emit('phone-call-state', 'active')
+      aa.emit('phone-call-state', 'idle')
+      const cmds = audioCommands(emitMessage)
+      expect(cmds.length).toBe(3)
+      expect(cmds[0].command).toBe(14) // ringing
+      expect(cmds[1].command).toBe(4) // active (answered)
+      expect(cmds[2].command).toBe(5) // ended
+    })
+  })
 })

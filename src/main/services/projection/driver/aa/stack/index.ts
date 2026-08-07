@@ -110,6 +110,12 @@ export class AAStack extends EventEmitter {
         this.emit('device-info', d)
     )
     session.on('device-status', (s: Record<string, unknown>) => this.emit('device-status', s))
+    // [hub] Phase 2.1: aggregate call state from PhoneStatus → AaEventBridge
+    // produces the AudioAttentionRinging/PhonecallStart/Stop commands that fire
+    // callState (§9.2 Tier 2).
+    session.on('phone-call-state', (state: 'idle' | 'ringing' | 'active') =>
+      this.emit('phone-call-state', state)
+    )
     session.on('video-focus-projected', () => this.emit('video-focus-projected'))
     session.on('cluster-video-focus-projected', () => this.emit('cluster-video-focus-projected'))
     session.on('media-metadata', (m: MediaPlaybackMetadata) => this.emit('media-metadata', m))

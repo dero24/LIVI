@@ -1,5 +1,6 @@
 /**
- * Audio channel handler (GAL types: MEDIA_AUDIO=4, SPEECH_AUDIO=5, PHONE_AUDIO=6).
+ * Audio channel handler (GAL types: MEDIA_AUDIO=4, SPEECH_AUDIO=5,
+ * SYSTEM_AUDIO=6, PHONE_AUDIO=7).
  *
  * Receives PCM or AAC-LC frames from the phone and emits them as 'pcm' events.
  * Sends AVMediaAck for flow control (same as VideoChannel).
@@ -22,10 +23,15 @@ type SendFn = (channelId: number, flags: number, msgId: number, data: Buffer) =>
 
 export type AudioChannelType = 'media' | 'speech' | 'phone'
 
+// [hub] Phase 2.1: ch 7 (PHONE_AUDIO) → 'phone' for telephony call audio.
+// ch 6 (SYSTEM_AUDIO) maps to 'phone' as well — both produce AudioOutputStart/
+// Stop in audioLifecycleCommand, which is correct for non-media audio. The
+// state signal for calls comes from PhoneStatus.calls, not from these channels.
 const CHANNEL_NAMES: Record<number, AudioChannelType> = {
   4: 'media',
   5: 'speech',
-  6: 'phone'
+  6: 'phone',
+  7: 'phone'
 }
 
 export class AudioChannel extends EventEmitter {

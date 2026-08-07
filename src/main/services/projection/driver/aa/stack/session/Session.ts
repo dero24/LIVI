@@ -169,6 +169,9 @@ export class Session extends EventEmitter {
   private _mainFrameSeen = false
   private _clusterFocusPending = false
   private _clusterStreamWanted = true
+  // [hub] Phase 2.1: last aggregate call state from PhoneStatus, to emit only
+  // on transitions (idle → ringing → active → idle). 'idle' is the initial.
+  private _lastCallAggregate: 'idle' | 'ringing' | 'active' = 'idle'
 
   constructor(
     private readonly _sock: net.Socket,
@@ -346,6 +349,24 @@ export class Session extends EventEmitter {
 
   // ── Post-TLS frame handling ───────────────────────────────────────────────
 
+  // [hub] Phase 2.1: derive an aggregate call state from PhoneStatus.calls[].
+  // phone_state enum (PhoneStatus.proto): UNKNOWN=0, IN_CALL=1, ON_HOLD=2,
+  // INACTIVE=3, INCOMING=4, CONFERENCED=5, MUTED=6.
+  private _aggregateCallState(calls: { phone_state?: number }[]): 'idle' | 'ringing' | 'active' {
+    let ringing = false
+    let active = false
+    for (const c of calls) {
+      const s = c.phone_state ?? 0
+      if (s === 4)
+        ringing = true // INCOMING
+      else if (s === 1 || s === 5 || s === 6) active = true // IN_CALL | CONFERENCED | MUTED
+      // ON_HOLD(2), INACTIVE(3), UNKNOWN(0) → neither
+    }
+    if (ringing) return 'ringing'
+    if (active) return 'active'
+    return 'idle'
+  }
+
   private _handleDecryptedMessage(
     channelId: number,
     flags: number,
@@ -453,6 +474,21 @@ export class Session extends EventEmitter {
               .replace(/^::ffff:/i, '')
               .replace(/%.*$/, '')
             this.emit('device-status', { ip: peer, signalStrength: signal })
+          }
+          // [hub] Phase 2.1: parse the calls list to drive Tier 2 callState.
+          // The PhoneStatus.calls[].phone_state enum: UNKNOWN=0, IN_CALL=1,
+          // ON_HOLD=2, INACTIVE=3, INCOMING=4, CONFERENCED=5, MUTED=6. We derive
+          // an aggregate state and emit it; AaEventBridge tracks transitions and
+          // produces the AudioAttentionRinging/PhonecallStart/Stop commands that
+          // fire ProjectionAudio's callState event (§9.2 Tier 2, §9.4).
+          const calls = ps['calls']
+          if (Array.isArray(calls)) {
+            const aggregate = this._aggregateCallState(calls as { phone_state?: number }[])
+            if (aggregate !== this._lastCallAggregate) {
+              this._lastCallAggregate = aggregate
+              this.emit('phone-call-state', aggregate)
+              if (DEBUG) console.log(`[Session] phone-call-state → ${aggregate}`)
+            }
           }
         } catch (e) {
           if (DEBUG) console.warn('[Session] phone-status parse error:', e)
@@ -597,8 +633,9 @@ export class Session extends EventEmitter {
     // Phone requested PROJECTED focus on the cluster sink
     this._cluster.on('video-focus-projected', () => this.emit('cluster-video-focus-projected'))
 
-    // Audio sinks: media (4), speech/guidance (5), system/notification (6)
-    for (const channelId of [CH.MEDIA_AUDIO, CH.SPEECH_AUDIO, CH.SYSTEM_AUDIO]) {
+    // Audio sinks: media (4), speech/guidance (5), system/notification (6),
+    // telephony/call audio (7) [hub] Phase 2.1.
+    for (const channelId of [CH.MEDIA_AUDIO, CH.SPEECH_AUDIO, CH.SYSTEM_AUDIO, CH.PHONE_AUDIO]) {
       const audio = new AudioChannel(channelId, (ch, flags, msgId, data) =>
         this._sendEncrypted(ch, flags, msgId, data)
       )

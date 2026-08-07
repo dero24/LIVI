@@ -65,7 +65,7 @@ export const CH = {
   MEDIA_AUDIO: 4, // music / podcast PCM  (MEDIA_SINK_MEDIA_AUDIO)
   SPEECH_AUDIO: 5, // navigation prompts  (MEDIA_SINK_GUIDANCE_AUDIO)
   SYSTEM_AUDIO: 6, // system sounds       (MEDIA_SINK_SYSTEM_AUDIO)
-  // (7 = MEDIA_SINK_TELEPHONY_AUDIO)
+  PHONE_AUDIO: 7, // [hub] call audio     (MEDIA_SINK_TELEPHONY_AUDIO)
   INPUT: 8, // touch + keycodes (INPUT_SOURCE)
   MIC_INPUT: 9, // microphone from phone  (MEDIA_SOURCE_MICROPHONE)
   BLUETOOTH: 10,

@@ -230,8 +230,10 @@ export function buildServiceDiscoveryResponse(
   }
 
   // ── Audio sinks + Microphone ──
-  void AS_TELEPHONY
-
+  // [hub] Phase 2.1: advertise the telephony audio sink (ch 7) so call audio
+  // routes to the hub speakers when a call is answered on the hub. 16kHz 1ch
+  // PCM, matching the AudioChannel:phone setup. The state signal comes from
+  // PhoneStatus.calls (parsed in Session.ts), not from this channel.
   if (!cfg.disableAudioOutput) {
     channels.push({
       id: CH.MEDIA_AUDIO,
@@ -247,6 +249,15 @@ export function buildServiceDiscoveryResponse(
       mediaSinkService: {
         availableType: MEDIA_CODEC.AUDIO_PCM,
         audioType: AS_GUIDANCE,
+        availableWhileInCall: true,
+        audioConfigs: [{ samplingRate: 16000, numberOfBits: 16, numberOfChannels: 1 }]
+      }
+    })
+    channels.push({
+      id: CH.PHONE_AUDIO,
+      mediaSinkService: {
+        availableType: MEDIA_CODEC.AUDIO_PCM,
+        audioType: AS_TELEPHONY,
         availableWhileInCall: true,
         audioConfigs: [{ samplingRate: 16000, numberOfBits: 16, numberOfChannels: 1 }]
       }
