@@ -453,6 +453,11 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
                                 _sent_clip = True
                                 _send("AT+CLIP=1\r")
                                 dprint("[hfp] >> AT+CLIP=1", flush=True)
+                            # [hub] Phase 2.5: register the fd so the event
+                            # server can write ATA/AT+CHUP outbound (§9.4 step 4).
+                            if _hfp_mac:
+                                with _hfp_fds_lock:
+                                    _hfp_fds[_hfp_mac] = (fd, device_path)
                             _push_hfp("hfpSlc")
 
                 elif line.startswith("+CIND:"):
@@ -576,6 +581,10 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
     except Exception as e:
         dprint(f"[hfp] error: {e}", flush=True)
     finally:
+        # [hub] Phase 2.5: unregister the fd from the HFP fd registry.
+        if _hfp_mac:
+            with _hfp_fds_lock:
+                _hfp_fds.pop(_hfp_mac, None)
         try:
             os.close(fd)
         except OSError:
@@ -985,6 +994,13 @@ _AA_EVENT_SOCK = "/tmp/aa-bt.sock"
 _subscribers: list[socket.socket] = []
 _subscribers_lock = threading.Lock()
 
+# [hub] Phase 2.5: HFP fd registry — MAC → (fd, device_path) for the currently
+# active HFP RFCOMM link per phone. Populated by _handle_hfp_rfcomm on SLC start,
+# cleared on disconnect. Used by the hfp-answer/hfp-hangup event-socket commands
+# so hubd can drive ATA/AT+CHUP outbound (§9.4 step 4, §9.3 answerVia:'hfp').
+_hfp_fds: dict[str, tuple[int, str]] = {}
+_hfp_fds_lock = threading.Lock()
+
 
 def _push_event(payload: dict) -> None:
     """Send one JSON line to every active subscriber, drop dead ones."""
@@ -1001,6 +1017,29 @@ def _push_event(payload: dict) -> None:
             except ValueError: pass
             try: s.close()
             except Exception: pass
+
+
+def _hfp_write_at(mac: str, at_cmd: str) -> dict:
+    """[hub] Phase 2.5: write an AT command (ATA / AT+CHUP) to the HFP RFCOMM
+    fd registered for ``mac``. This is how hubd answers/declines a call via
+    Tier 3 HFP (§9.3 answerVia:'hfp', §9.4 step 4). Returns a JSON-able dict."""
+    if not mac:
+        return {"ok": False, "error": "hfp command requires a MAC argument"}
+    mac = mac.upper()
+    with _hfp_fds_lock:
+        entry = _hfp_fds.get(mac)
+    if entry is None:
+        return {"ok": False, "error": f"no active HFP link for {mac}"}
+    fd, _path = entry
+    try:
+        os.write(fd, f"{at_cmd}\r".encode("utf-8"))
+        dprint(f"[hfp] >> {at_cmd} (mac={mac})", flush=True)
+        return {"ok": True}
+    except OSError as e:
+        # The fd may have been closed (phone disconnected). Clean up the stale entry.
+        with _hfp_fds_lock:
+            _hfp_fds.pop(mac, None)
+        return {"ok": False, "error": f"write failed: {e}"}
 
 
 def _read_request(c: socket.socket, max_bytes: int = 4096,
@@ -1088,6 +1127,11 @@ def _start_event_server() -> None:
                 count = deauth_all_clients()
                 dprint(f"[aa-bt] deauth-ap: kicked {count} client(s)", flush=True)
                 return {"ok": True, "count": count}
+            # [hub] Phase 2.5: outbound HFP call control (§9.4 step 4, §9.3).
+            if cmd == "hfp-answer":
+                return _hfp_write_at(arg, "ATA")
+            if cmd == "hfp-hangup":
+                return _hfp_write_at(arg, "AT+CHUP")
             return {"ok": False, "error": f"unknown command: {cmd!r}"}
         except Exception as e:
             traceback.print_exc()

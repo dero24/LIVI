@@ -117,6 +117,16 @@ export class AaBtSockClient {
     return (await this.request('deauth-ap', timeoutMs)) as ActionResponse
   }
 
+  // [hub] Phase 2.5: answer a call via HFP (write ATA to the phone's RFCOMM fd).
+  async hfpAnswer(mac: string, timeoutMs = 5000): Promise<ActionResponse> {
+    return (await this.request(`hfp-answer ${mac}`, timeoutMs)) as ActionResponse
+  }
+
+  // [hub] Phase 2.5: hang up via HFP (write AT+CHUP).
+  async hfpHangup(mac: string, timeoutMs = 5000): Promise<ActionResponse> {
+    return (await this.request(`hfp-hangup ${mac}`, timeoutMs)) as ActionResponse
+  }
+
   // Open a event subscription
   subscribe(
     onEvent: (ev: {

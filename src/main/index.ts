@@ -105,7 +105,7 @@ app.whenReady().then(async () => {
     restartApp: () => {
       void restartApp(runtimeState, services)
     },
-    sendCommand: (key, _args) => projectionService.hubCommand(key),
+    sendCommand: (key, args) => projectionService.hubCommand(key, args),
     onPushState: (state) => broadcastHubState(state),
     onEvent: (listener) => projectionService.onHubEvent(listener)
   })

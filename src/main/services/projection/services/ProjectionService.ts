@@ -1934,8 +1934,11 @@ export class ProjectionService {
 
   // [hub] Phase 2.5: the audited control commands hubd sends via the HubBridge
   // to answer/decline a ring (§9.3). Projection-path commands become InputCommands
-  // on the active driver; HFP/companion paths are wired as their transports land.
-  public hubCommand(key: string): { ok: boolean; error?: string } {
+  // on the active driver; HFP commands write ATA/AT+CHUP via aa_handler.py.
+  public hubCommand(
+    key: string,
+    args: Record<string, unknown> = {}
+  ): { ok: boolean; error?: string } {
     const inputMap: Record<string, string> = {
       acceptPhone: 'acceptCall',
       rejectPhone: 'rejectCall'
@@ -1945,8 +1948,16 @@ export class ProjectionService {
       this.dispatchRemoteInput(input)
       return { ok: true }
     }
-    // hfpAnswer / hfpHangup / companionAccept / companionDecline: the outbound
-    // HFP ATA path and the companion push path land with their transports.
+    // [hub] Phase 2.5: outbound HFP call control via aa_handler.py's fd registry.
+    if (key === 'hfpAnswer' || key === 'hfpHangup') {
+      const mac = typeof args.mac === 'string' ? args.mac : ''
+      if (!mac) return { ok: false, error: 'hfp command requires a mac' }
+      const fn = key === 'hfpAnswer' ? this.aaBtSock.hfpAnswer : this.aaBtSock.hfpHangup
+      fn(mac).catch((e) => console.warn(`[ProjectionService] ${key} failed`, e))
+      return { ok: true }
+    }
+    // companionAccept / companionDecline: the companion push path lands with its
+    // transport (a push from hubd → companion, acted on via TelecomManager).
     return { ok: false, error: `command-not-wired:${key}` }
   }
 
