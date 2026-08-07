@@ -354,6 +354,10 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
     """Full HFP HF SLC setup + AT command response loop."""
     global hfp_slc_established
 
+    # [hub] Tier 3: the MAC for this HFP link, used to attribute RING/+CLIP:/
+    # +CIEV: events so hubd can resolve a phoneId by btMac (§9.4).
+    _hfp_mac = _mac_from_path(device_path)
+
     import fcntl as _fcntl
     fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
     _fcntl.fcntl(fd, _fcntl.F_SETFL, fl & ~os.O_NONBLOCK)
@@ -364,12 +368,22 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
     def _send_ok() -> None:
         _send("\r\nOK\r")
 
+    # [hub] Tier 3: push an HFP event to LIVI's main process (and on to hubd) so
+    # the ring arbiter sees the call. Mirrors the existing _push_event used for
+    # aa-device/device_changed/input.
+    def _push_hfp(event: str, **extra) -> None:
+        try:
+            _push_event({"event": event, "mac": _hfp_mac, **extra})
+        except Exception as e:  # noqa: BLE001
+            dprint(f"[hfp] push_event {event} failed: {e}", flush=True)
+
     # SLC state machine
     ag_features: int = 0
     _sent_bac:        bool = False
     _sent_cind_test:  bool = False
     _sent_cind_read:  bool = False
     _sent_cmer:       bool = False
+    _sent_clip:       bool = False  # [hub] AT+CLIP=1 after SLC (§9.4 step 2)
 
     try:
         if initial_data:
@@ -432,6 +446,14 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
                         elif _sent_cmer:
                             hfp_slc_established = True
                             dprint("[hfp] ✓ SLC established — Android Auto should trigger", flush=True)
+                            # [hub] Tier 3 (§9.4 step 2): enable calling-line
+                            # identification so +CLIP: arrives with RING. Without
+                            # this the caller name/number may never come.
+                            if not _sent_clip:
+                                _sent_clip = True
+                                _send("AT+CLIP=1\r")
+                                dprint("[hfp] >> AT+CLIP=1", flush=True)
+                            _push_hfp("hfpSlc")
 
                 elif line.startswith("+CIND:"):
                     dprint(f"[hfp]    indicators: {line}", flush=True)
@@ -487,9 +509,15 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
                     _send(f"AT+BCS={codec}\r")
 
                 elif line == "ATA":
+                    # [hub] Tier 3 (§9.4 step 4): actionable answer. The hub
+                    # answers via hfpAnswer; an inbound ATA here is the phone
+                    # confirming/relaying — reply OK and notify hubd.
                     _send_ok()
+                    _push_hfp("hfpAnswered")
                 elif line == "AT+CHUP":
+                    # [hub] Tier 3: actionable hangup notification.
                     _send_ok()
+                    _push_hfp("hfpHungup")
                 elif line.startswith("ATD"):
                     dprint(f"[hfp]    dial: {line[3:].rstrip(';')}", flush=True)
                     _send_ok()
@@ -522,8 +550,24 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
                 elif line.startswith("AT+CNUM"):
                     _send_ok()
 
-                elif line.startswith("+CIEV:") or line == "RING" or line.startswith("+CLIP:"):
+                elif line == "RING":
+                    # [hub] Tier 3 (§9.4 step 3): forward instead of dprint-only.
                     dprint(f"[hfp]    unsolicited: {line}", flush=True)
+                    _push_hfp("hfpRing")
+
+                elif line.startswith("+CLIP:"):
+                    # +CLIP: "<number>",<type>,,,"<name>",<priority>
+                    dprint(f"[hfp]    unsolicited: {line}", flush=True)
+                    _num, _name = _parse_clip(line)
+                    _push_hfp("hfpClip", number=_num, name=_name)
+
+                elif line.startswith("+CIEV:"):
+                    # +CIEV: <idx>,<val>. callsetup(3)=incoming when val 1→3;
+                    # call(1)=active; either going to 0 → ended.
+                    dprint(f"[hfp]    unsolicited: {line}", flush=True)
+                    _state = _parse_ciev_callsetup(line)
+                    if _state is not None:
+                        _push_hfp("hfpCiev", state=_state)
 
                 else:
                     dprint(f"[hfp]    unknown AT: {line!r} — sending OK", flush=True)
@@ -721,6 +765,57 @@ def _connect_hfp_direct(mac: str) -> None:
 def _device_path(mac: str) -> str:
     """Compose the BlueZ D-Bus device object path from a MAC address."""
     return f"{ADAPTER_PATH}/dev_{mac.replace(':', '_').upper()}"
+
+
+def _mac_from_path(path: str) -> str:
+    """[hub] Extract a normalized AA:BB:CC:DD:EE:FF MAC from a BlueZ device path,
+    or '' if the path does not contain one. Used to attribute Tier 3 HFP events
+    (RING/+CLIP:/+CIEV:) to a phone so hubd can resolve a phoneId by btMac."""
+    if "/dev_" not in path:
+        return ""
+    suffix = path.rsplit("/dev_", 1)[1]
+    return suffix.replace("_", ":").upper()
+
+
+def _parse_clip(line: str) -> tuple[str | None, str | None]:
+    """[hub] Parse +CLIP: "<number>",<type>,,,"<name>" -> (number, name).
+    Tolerant of missing fields; both may be None."""
+    body = line.split(":", 1)[1].strip()
+    parts = []
+    cur = ""
+    in_str = False
+    for ch in body:
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if ch == "," and not in_str:
+            parts.append(cur)
+            cur = ""
+            continue
+        cur += ch
+    parts.append(cur)
+    number = parts[0] if parts and parts[0] else None
+    # +CLIP layout: number, type, subaddr, satype, name(4), priority(5)
+    name = parts[4] if len(parts) > 4 and parts[4] else None
+    return number, name
+
+
+def _parse_ciev_callsetup(line: str) -> str | None:
+    """[hub] Map +CIEV: <idx>,<val> to a hubd ring state using the CIND indicator
+    order we advertised: service(1) call(2) callsetup(3) callheld(4) signal(5)
+    roam(6) battchg(7). Returns 'incoming'|'ended'|None (None = not a call
+    indicator we act on)."""
+    try:
+        body = line.split(":", 1)[1].strip()
+        idx_s, val_s = body.split(",", 1)
+        idx, val = int(idx_s.strip()), int(val_s.strip())
+    except (ValueError, IndexError):
+        return None
+    if idx == 2:  # call: 0=none/ended, 1=active
+        return "ended" if val == 0 else None
+    if idx == 3:  # callsetup: 0=idle, 1=incoming, 2=connecting, 3=outgoing
+        return "incoming" if val == 1 else "ended" if val == 0 else None
+    return None
 
 
 def _busctl_parse_value(s: str) -> str | bool | int:

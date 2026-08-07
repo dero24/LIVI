@@ -34,6 +34,10 @@ export interface HubBridgeHost {
   getVersion?(): string | null
   getSettings(): unknown
   saveSettings(partial: Record<string, unknown>): { ok: boolean }
+  /** [hub] Send a projection/HFP control command (acceptPhone, rejectPhone,
+   *  hfpAnswer, hfpHangup, companionAccept, companionDecline). Audited by the
+   *  allow-list of keys the host implements. */
+  sendCommand?(key: string, args?: Record<string, unknown>): { ok: boolean; error?: string }
   restartApp(): void
   /** hubd pushes assembled HubState here; main forwards it to renderers. */
   onPushState(state: unknown): void
@@ -181,6 +185,15 @@ export class HubBridge {
         case 'restartApp':
           this.host.restartApp()
           return reply({ ok: true })
+        case 'sendCommand':
+          if (!this.host.sendCommand)
+            return reply({ ok: false, error: 'sendCommand-not-supported' })
+          return reply({
+            ...this.host.sendCommand(
+              String(args.key ?? ''),
+              (args.args as Record<string, unknown>) ?? {}
+            )
+          })
         case 'pushState':
           this.host.onPushState(args.state)
           return reply({ ok: true })

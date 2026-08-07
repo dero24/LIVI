@@ -1932,6 +1932,24 @@ export class ProjectionService {
     }
   }
 
+  // [hub] Phase 2.5: the audited control commands hubd sends via the HubBridge
+  // to answer/decline a ring (§9.3). Projection-path commands become InputCommands
+  // on the active driver; HFP/companion paths are wired as their transports land.
+  public hubCommand(key: string): { ok: boolean; error?: string } {
+    const inputMap: Record<string, string> = {
+      acceptPhone: 'acceptCall',
+      rejectPhone: 'rejectCall'
+    }
+    const input = inputMap[key]
+    if (input) {
+      this.dispatchRemoteInput(input)
+      return { ok: true }
+    }
+    // hfpAnswer / hfpHangup / companionAccept / companionDecline: the outbound
+    // HFP ATA path and the companion push path land with their transports.
+    return { ok: false, error: `command-not-wired:${key}` }
+  }
+
   // Open the long-lived aa-bt event subscription
   private openAaBtSubscription(): void {
     if (this.aaBtSubscription) return
@@ -1951,6 +1969,32 @@ export class ProjectionService {
               this.aaSerialByInstance.set(ev.instanceId, ev.usbSerial)
             }
             return
+          }
+          // [hub] Tier 3 (§9.4): forward HFP events from aa_handler.py to the
+          // HubBridge (via emitProjectionEvent → hubEventTaps) so hubd's ring
+          // arbiter sees them. mac attributes the call to a phone.
+          if (typeof ev.mac === 'string' && ev.mac) {
+            if (ev.event === 'hfpRing') {
+              this.emitProjectionEvent({ type: 'hfpRing', mac: ev.mac })
+              return
+            }
+            if (ev.event === 'hfpClip') {
+              this.emitProjectionEvent({
+                type: 'hfpClip',
+                mac: ev.mac,
+                number: ev.number ?? null,
+                name: ev.name ?? null
+              })
+              return
+            }
+            if (ev.event === 'hfpCiev' && (ev.state === 'incoming' || ev.state === 'ended')) {
+              this.emitProjectionEvent({ type: 'hfpCiev', mac: ev.mac, state: ev.state })
+              return
+            }
+            if (ev.event === 'hfpSlc') {
+              this.emitProjectionEvent({ type: 'hfpSlc', mac: ev.mac })
+              return
+            }
           }
           this.refreshAaBtPairedList({
             preferMac: typeof ev.mac === 'string' ? ev.mac : undefined

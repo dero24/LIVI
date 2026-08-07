@@ -127,6 +127,10 @@ export class AaBtSockClient {
       btMac?: string
       instanceId?: string
       usbSerial?: string
+      // [hub] Tier 3 HFP events forwarded from aa_handler.py (§9.4)
+      number?: string
+      name?: string
+      state?: string
     }) => void,
     onClose?: () => void,
     onOpen?: () => void

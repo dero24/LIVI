@@ -137,3 +137,11 @@ export type ProjectionEvent =
   | { type: 'failure' }
   | { type: 'video-codec'; payload: { codec: VideoCodec } }
   | { type: 'cluster-video-codec'; payload: { codec: VideoCodec } }
+  // [hub] Tier 3 HFP events forwarded from aa_handler.py over aa-bt.sock
+  // (§9.4). mac attributes the call to a phone so hubd resolves a phoneId by
+  // btMac alias and feeds the ring arbiter at tier 3.
+  | { type: 'hfpRing'; mac: string }
+  | { type: 'hfpClip'; mac: string; number: string | null; name: string | null }
+  | { type: 'hfpCiev'; mac: string; state: 'incoming' | 'ended' }
+  | { type: 'hfpSco'; mac: string; up: boolean }
+  | { type: 'hfpSlc'; mac: string }
