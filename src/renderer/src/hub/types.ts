@@ -38,12 +38,43 @@ export interface HubDock {
   sensor?: Record<string, unknown>
 }
 
+// [hub] Phase 2.3 — the ring block of HubState (§7.4, §12.6 state E). hubd
+// resolves answerVia/canAnswerOnHub/canBringToHub; the renderer only draws.
+export interface HubRingCaller {
+  name: string | null
+  number: string | null
+  photo: string | null
+}
+
+export interface HubRingQueued {
+  phoneId: string
+  person: string | null
+  caller: HubRingCaller
+  state: string
+  tier: number
+}
+
+export interface HubRing {
+  phoneId: string
+  person: string | null
+  caller: HubRingCaller
+  state: 'incoming' | 'active' | 'ended'
+  tier: number
+  tone: boolean
+  startedAt: number
+  canAnswerOnHub: boolean
+  answerVia: 'projection' | 'hfp' | 'companion' | null
+  canBringToHub: boolean
+  queued: HubRingQueued[]
+}
+
 export interface HubState {
   v: number
   rev: number
   at?: string
   phones: HubPhone[]
   docks: HubDock[]
+  ring?: HubRing | null
   transport?: unknown
   health?: { ok?: boolean; bridge?: boolean }
 }

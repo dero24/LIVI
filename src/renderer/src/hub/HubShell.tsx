@@ -13,6 +13,7 @@ import { Box, Typography } from '@mui/material'
 import { useCallback } from 'react'
 import { HealthDot } from './components/HealthDot'
 import { PresenceRow } from './components/PresenceRow'
+import { RingBanner } from './components/RingBanner'
 import { Screensaver } from './components/Screensaver'
 import type { HubPhone } from './types'
 import { useHubState } from './useHubState'
@@ -33,6 +34,10 @@ export function HubShell() {
   const t = useHubTokens()
   const { state, healthy, stale } = useHubState()
 
+  const intent = useCallback((payload: Record<string, unknown>) => {
+    void window.hub?.intent(payload)
+  }, [])
+
   const select = useCallback((phoneId: string) => {
     void window.hub?.intent({ type: 'phone.select', phoneId })
   }, [])
@@ -40,6 +45,7 @@ export function HubShell() {
   const phones = state?.phones ?? []
   const homePhones = phones.filter(isHome)
   const connecting = state === null || stale
+  const ring = state?.ring ?? null
 
   return (
     <Box
@@ -89,6 +95,20 @@ export function HubShell() {
             </Typography>
           </Box>
         </>
+      )}
+
+      {/* [hub] Phase 2.3: the ring banner is a z-layer over whatever is on
+          screen (§12.2/§12.6 state E). It preempts the screensaver, the landing
+          page and projection; the previous surface is restored when it ends. */}
+      {ring && (
+        <RingBanner
+          ring={ring}
+          knownPhoneCount={phones.length}
+          onAnswer={(phoneId) => intent({ type: 'ring.answer', phoneId })}
+          onDecline={(phoneId) => intent({ type: 'ring.decline', phoneId })}
+          onSilence={(phoneId) => intent({ type: 'ring.silence', phoneId })}
+          onBringToHub={(phoneId) => intent({ type: 'ring.bringToHub', phoneId })}
+        />
       )}
     </Box>
   )

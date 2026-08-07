@@ -124,4 +124,40 @@ describe('HubShell', () => {
     renderShell('light')
     await waitFor(() => expect(screen.getByTestId('hub-shell')).toBeInTheDocument())
   })
+
+  it('overlays the ring banner when HubState.ring is set and wires intents', async () => {
+    const { intent } = installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Sarah' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'projecting', rank: 4 }
+          }
+        ],
+        ring: {
+          phoneId: 'P1',
+          person: 'Sarah',
+          caller: { name: 'Mom', number: '+15551234', photo: null },
+          state: 'incoming',
+          tier: 1,
+          tone: true,
+          startedAt: Date.now(),
+          canAnswerOnHub: true,
+          answerVia: 'projection',
+          canBringToHub: true,
+          queued: []
+        }
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-ring-banner')).toBeInTheDocument())
+    expect(screen.getByText('Mom')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('hub-ring-answer'))
+    expect(intent).toHaveBeenCalledWith({ type: 'ring.answer', phoneId: 'P1' })
+    fireEvent.click(screen.getByTestId('hub-ring-bring-to-hub'))
+    expect(intent).toHaveBeenCalledWith({ type: 'ring.bringToHub', phoneId: 'P1' })
+  })
 })
