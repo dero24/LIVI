@@ -10,7 +10,8 @@
 //   - idle (no phones home)       -> screensaver
 //   - one or more phones          -> presence row + landing
 import { Box, Typography } from '@mui/material'
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
+import { FirstRunChip } from './components/FirstRunChip'
 import { HealthDot } from './components/HealthDot'
 import { PresenceRow } from './components/PresenceRow'
 import { RingBanner } from './components/RingBanner'
@@ -42,6 +43,21 @@ export function HubShell() {
     void window.hub?.intent({ type: 'phone.select', phoneId })
   }, [])
 
+  // [hub] G1: the bar is a view-area inset (§12.2). Measure its rendered height
+  // (CSS px = display px in the kiosk renderer) and post it as the AA/CP view-
+  // area top inset. ServiceDiscoveryBuilder scales display→tier px. Debounced
+  // so a resize storm doesn't spam settings.save.
+  const viewAreaTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onBarHeight = useCallback((px: number) => {
+    if (viewAreaTimer.current) clearTimeout(viewAreaTimer.current)
+    viewAreaTimer.current = setTimeout(() => {
+      void window.hub?.intent({
+        type: 'settings.set',
+        settings: { projectionViewAreaTop: px }
+      })
+    }, 150)
+  }, [])
+
   const phones = state?.phones ?? []
   const homePhones = phones.filter(isHome)
   const connecting = state === null || stale
@@ -70,7 +86,7 @@ export function HubShell() {
         <Screensaver message={connecting ? 'Connecting to the hub…' : 'Dock a phone to begin'} />
       ) : (
         <>
-          <PresenceRow phones={phones} onSelect={select} />
+          <PresenceRow phones={phones} onSelect={select} onHeight={onBarHeight} />
           <Box
             sx={{
               flex: 1,
@@ -95,6 +111,21 @@ export function HubShell() {
             </Typography>
           </Box>
         </>
+      )}
+
+      {/* [hub] G2 / §6.2: the first-run naming + enrollment chip, shown once
+          per unnamed/companion-less phone. Naming is an invitation, not a gate. */}
+      {phones.length > 0 && (
+        <FirstRunChip
+          phone={phones[0]}
+          onRename={(phoneId, name) => intent({ type: 'phone.rename', phoneId, name })}
+          onSetAutoDock={(phoneId, autoDock) =>
+            intent({ type: 'phone.policy', phoneId, policy: { autoDock } })
+          }
+          onEnrolStart={async (phoneId) => {
+            await intent({ type: 'phone.enrolStart', phoneId })
+          }}
+        />
       )}
 
       {/* [hub] Phase 2.3: the ring banner is a z-layer over whatever is on

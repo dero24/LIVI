@@ -60,20 +60,27 @@ export function buildServiceDiscoveryResponse(
     }
   }
 
+  // [hub] G1: projectionViewArea* and projectionSafeArea* are in DISPLAY px
+  // (matching projectionWidth/Height — see dongleDriver SendViewArea, CpSession
+  // viewArea, Projection.tsx ViewAreaMask). The AA frame is tier px (vW×vH), so
+  // scale display→tier here. When display == tier (landscape, no letterbox) the
+  // scale is 1.0 and behaviour is unchanged.
+  const sy = cfg.displayHeight && cfg.displayHeight > 0 ? vH / cfg.displayHeight : 1
+  const sx = cfg.displayWidth && cfg.displayWidth > 0 ? vW / cfg.displayWidth : 1
   // View Area -> margins (AR letterbox + user view inset). Safe Area -> content_insets.
-  const viewTop = Math.max(0, cfg.mainViewAreaTop ?? 0)
-  const viewBottom = Math.max(0, cfg.mainViewAreaBottom ?? 0)
-  const viewLeft = Math.max(0, cfg.mainViewAreaLeft ?? 0)
-  const viewRight = Math.max(0, cfg.mainViewAreaRight ?? 0)
+  const viewTop = Math.max(0, Math.round((cfg.mainViewAreaTop ?? 0) * sy))
+  const viewBottom = Math.max(0, Math.round((cfg.mainViewAreaBottom ?? 0) * sy))
+  const viewLeft = Math.max(0, Math.round((cfg.mainViewAreaLeft ?? 0) * sx))
+  const viewRight = Math.max(0, Math.round((cfg.mainViewAreaRight ?? 0) * sx))
   const insetTop = Math.floor(heightMargin / 2) + viewTop
   const insetBottom = heightMargin - Math.floor(heightMargin / 2) + viewBottom
   const insetLeft = Math.floor(widthMargin / 2) + viewLeft
   const insetRight = widthMargin - Math.floor(widthMargin / 2) + viewRight
   const mainContentInsets = {
-    top: Math.max(0, cfg.mainSafeAreaTop ?? 0),
-    bottom: Math.max(0, cfg.mainSafeAreaBottom ?? 0),
-    left: Math.max(0, cfg.mainSafeAreaLeft ?? 0),
-    right: Math.max(0, cfg.mainSafeAreaRight ?? 0)
+    top: Math.max(0, Math.round((cfg.mainSafeAreaTop ?? 0) * sy)),
+    bottom: Math.max(0, Math.round((cfg.mainSafeAreaBottom ?? 0) * sy)),
+    left: Math.max(0, Math.round((cfg.mainSafeAreaLeft ?? 0) * sx)),
+    right: Math.max(0, Math.round((cfg.mainSafeAreaRight ?? 0) * sx))
   }
 
   // AudioStreamType: GUIDANCE=1, SYSTEM=2, MEDIA=3, TELEPHONY=4
