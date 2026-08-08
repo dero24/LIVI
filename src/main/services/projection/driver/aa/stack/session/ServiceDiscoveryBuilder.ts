@@ -237,10 +237,15 @@ export function buildServiceDiscoveryResponse(
   }
 
   // ── Audio sinks + Microphone ──
-  // [hub] Phase 2.1: advertise the telephony audio sink (ch 7) so call audio
-  // routes to the hub speakers when a call is answered on the hub. 16kHz 1ch
-  // PCM, matching the AudioChannel:phone setup. The state signal comes from
-  // PhoneStatus.calls (parsed in Session.ts), not from this channel.
+  // [hub] Phase 2.1 (reverted): advertising the telephony audio sink (ch 7,
+  // AUDIO_STREAM_TELEPHONY) caused the Samsung SM-S908U to reject the SDR and
+  // tear down every session after ~2.5s (AudioFocus RELEASE → no channel opens
+  // → timeout). The phone's AA stack expects a telephony sink to be backed by a
+  // real HFP/telephony profile; a software-only HU advertising it fails the
+  // compliance check. Call audio routes via Tier 3 HFP (§9.4, aa_handler.py
+  // SCO), which is the proven path on this hardware — ch 7 was redundant. The
+  // PHONE_AUDIO constant + AudioChannel mapping are kept for documentation.
+  void AS_TELEPHONY
   if (!cfg.disableAudioOutput) {
     channels.push({
       id: CH.MEDIA_AUDIO,
@@ -256,15 +261,6 @@ export function buildServiceDiscoveryResponse(
       mediaSinkService: {
         availableType: MEDIA_CODEC.AUDIO_PCM,
         audioType: AS_GUIDANCE,
-        availableWhileInCall: true,
-        audioConfigs: [{ samplingRate: 16000, numberOfBits: 16, numberOfChannels: 1 }]
-      }
-    })
-    channels.push({
-      id: CH.PHONE_AUDIO,
-      mediaSinkService: {
-        availableType: MEDIA_CODEC.AUDIO_PCM,
-        audioType: AS_TELEPHONY,
         availableWhileInCall: true,
         audioConfigs: [{ samplingRate: 16000, numberOfBits: 16, numberOfChannels: 1 }]
       }

@@ -633,9 +633,11 @@ export class Session extends EventEmitter {
     // Phone requested PROJECTED focus on the cluster sink
     this._cluster.on('video-focus-projected', () => this.emit('cluster-video-focus-projected'))
 
-    // Audio sinks: media (4), speech/guidance (5), system/notification (6),
-    // telephony/call audio (7) [hub] Phase 2.1.
-    for (const channelId of [CH.MEDIA_AUDIO, CH.SPEECH_AUDIO, CH.SYSTEM_AUDIO, CH.PHONE_AUDIO]) {
+    // Audio sinks: media (4), speech/guidance (5), system/notification (6).
+    // [hub] Phase 2.1: ch 7 (PHONE_AUDIO) instantiation reverted — the sink is
+    // no longer advertised (see ServiceDiscoveryBuilder); instantiating an
+    // AudioChannel for an unadvertised channel is harmless but pointless.
+    for (const channelId of [CH.MEDIA_AUDIO, CH.SPEECH_AUDIO, CH.SYSTEM_AUDIO]) {
       const audio = new AudioChannel(channelId, (ch, flags, msgId, data) =>
         this._sendEncrypted(ch, flags, msgId, data)
       )
