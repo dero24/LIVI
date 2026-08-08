@@ -121,6 +121,22 @@ describe('App', () => {
     expect(navigateMock).not.toHaveBeenCalled()
   })
 
+  test('hub mode (default) boots into the HubShell surface from home', async () => {
+    mockPathname = '/'
+    render(<App />)
+
+    expect(navigateMock).toHaveBeenCalledWith('/hub', { replace: true })
+  })
+
+  test('hubServiceMode skips the hub boot and honours the configured start page', async () => {
+    liviState.settings = { ...liviState.settings, hubServiceMode: true, startPage: 'media' }
+    mockPathname = '/'
+    render(<App />)
+
+    expect(navigateMock).toHaveBeenCalledWith('/media', { replace: true })
+    expect(navigateMock).not.toHaveBeenCalledWith('/hub', expect.anything())
+  })
+
   test('sets navEl and contentEl via app context when they are missing', async () => {
     const onSetAppContext = vi.fn()
 

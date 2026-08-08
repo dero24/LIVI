@@ -10,6 +10,7 @@ import { ROUTES } from './constants'
 import { AppContext } from './context'
 import { useActiveControl, useFocus, useKeyDown } from './hooks'
 import { appRoutes } from './routes/appRoutes'
+import { RoutePath } from './routes/types'
 import { useLiviStore, useStatusStore } from './store/store'
 import { broadcastMediaKey } from './utils/broadcastMediaKey'
 import { updateCameras } from './utils/cameraDetection'
@@ -109,6 +110,17 @@ function AppInner() {
 
     if (location.pathname !== ROUTES.HOME) {
       didApplyStartPageRef.current = true
+      return
+    }
+
+    // [hub] M14 / §12.5: hub mode (the default) boots into the HubShell surface
+    // — the ring banner, presence row and screensaver live there, not on LIVI's
+    // own pages. Projection is mounted above the router, so AA/CP keep working.
+    // hubServiceMode=true skips this and leaves LIVI's start-page logic intact
+    // (service mode, for bring-up and calibration).
+    if (!settings.hubServiceMode) {
+      didApplyStartPageRef.current = true
+      navigate(`/${RoutePath.Hub}`, { replace: true })
       return
     }
 

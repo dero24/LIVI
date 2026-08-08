@@ -8,8 +8,9 @@ export enum RoutePath {
   Devices = 'devices',
   Settings = 'settings',
   Telemetry = 'telemetry',
-  // [hub] the HubShell surface. Additive for now; becomes the default surface in
-  // the Phase 1.8 root-swap once projection-plane coexistence (§12.2) is wired.
+  // [hub] the HubShell surface. Hub mode boots here by default (App.tsx, M14);
+  // the full Phase 1.8 root-swap lands once projection-plane coexistence (§12.2)
+  // is wired.
   Hub = 'hub'
 }
 
