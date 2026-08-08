@@ -69,6 +69,20 @@ describe('AppLayout', () => {
     expect(container.querySelector('#content-root')?.getAttribute('data-nav-hidden')).toBe('1')
   })
 
+  test('[hub] does not render the nav column on the hub surface', async () => {
+    mockPathname = '/hub'
+    const navRef = createRef<HTMLDivElement>()
+    const mainRef = createRef<HTMLDivElement>()
+    const { container, queryByTestId } = render(
+      <AppLayout navRef={navRef} mainRef={mainRef} receivingVideo={false}>
+        <div>Content</div>
+      </AppLayout>
+    )
+    expect(queryByTestId('nav')).toBeNull()
+    expect(container.querySelector('#content-root')?.getAttribute('data-nav-present')).toBe('0')
+    expect(container.querySelector('#content-root')?.getAttribute('data-nav-hidden')).toBe('1')
+  })
+
   test('auto-hides nav after inactivity on maps', async () => {
     mockPathname = '/cluster'
     const navRef = createRef<HTMLDivElement>()

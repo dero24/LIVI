@@ -41,6 +41,11 @@ export const AppLayout: FC<PropsWithChildren<AppLayoutProps>> = ({
   const tabs = useTabsConfig(receivingVideo)
   const singleTab = tabs.length <= 1
 
+  // [hub] §12.4: the HubShell is full-bleed and outside LIVI's nav. AppLayout
+  // wraps every route, so without this the nav column renders on /hub too and
+  // a stray tap strands the appliance on a LIVI page with no way back.
+  const isHubSurface = pathname === ROUTES.HUB
+
   const hideNavHome = isStreaming && pathname === ROUTES.HOME
   const hideNav = hideNavHome || (inAutoHideNavPage && clusterNavHidden)
 
@@ -65,7 +70,7 @@ export const AppLayout: FC<PropsWithChildren<AppLayoutProps>> = ({
       }}
     >
       {/* NAV COLUMN */}
-      {!singleTab && (
+      {!singleTab && !isHubSurface && (
         <div
           ref={navRef}
           id="nav-root"
@@ -121,8 +126,8 @@ export const AppLayout: FC<PropsWithChildren<AppLayoutProps>> = ({
       <div
         ref={mainRef}
         id="content-root"
-        data-nav-hidden={hideNav || singleTab ? '1' : '0'}
-        data-nav-present={singleTab ? '0' : '1'}
+        data-nav-hidden={hideNav || singleTab || isHubSurface ? '1' : '0'}
+        data-nav-present={singleTab || isHubSurface ? '0' : '1'}
         style={{
           flex: 1,
           minWidth: 0,

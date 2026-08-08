@@ -6,6 +6,8 @@ export enum ROUTES {
   DEVICES = '/devices',
   SETTINGS = '/settings',
   TELEMETRY = '/telemetry',
+  // [hub] the HubShell surface (hub mode boots here, M14)
+  HUB = '/hub',
   QUIT = 'quit',
   TRANSPORT_SWITCH = 'transport-switch'
 }
