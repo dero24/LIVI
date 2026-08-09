@@ -237,24 +237,15 @@ export function buildServiceDiscoveryResponse(
   }
 
   // ── Audio sinks + Microphone ──
-  // [hub] Phase 2.1: advertise the telephony audio sink (ch 7,
-  // AUDIO_STREAM_TELEPHONY) so the phone routes call audio through AA over USB.
-  // Previously removed (3f10eee5) because it caused Samsung SM-S908U to reject
-  // the SDR with landscape config (1280x720, dpi 0). Retrying with portrait
-  // config (600x1024, dpi 120) — the phone may accept it now. If the AA session
-  // fails (2.5s timeout loop), revert this block.
-  // Also see: Session.ts _handleDecryptedMessage for the audio channel loop.
+  // [hub] Phase 2.1 (reverted, confirmed 2026-08-08): advertising the
+  // telephony audio sink (ch 7, AUDIO_STREAM_TELEPHONY) causes Samsung
+  // SM-S908U to reject the SDR — both with landscape (1280x720) and
+  // portrait (600x1024, dpi 120) configs. The phone tears down every
+  // session after ~2.5s (AudioFocus RELEASE → no channel opens → timeout).
+  // Call audio must route via Tier 3 HFP (§9.4, aa_handler.py SCO) or a
+  // different AA audio channel.
   void AS_TELEPHONY
   if (!cfg.disableAudioOutput) {
-    channels.push({
-      id: CH.PHONE_AUDIO,
-      mediaSinkService: {
-        availableType: MEDIA_CODEC.AUDIO_PCM,
-        audioType: AS_TELEPHONY,
-        availableWhileInCall: true,
-        audioConfigs: [{ samplingRate: 16000, numberOfBits: 16, numberOfChannels: 1 }]
-      }
-    })
     channels.push({
       id: CH.MEDIA_AUDIO,
       mediaSinkService: {
