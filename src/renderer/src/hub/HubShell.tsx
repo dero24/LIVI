@@ -69,30 +69,49 @@ export function HubShell() {
   // (setVisible + show-video class), gated on receivingVideo from LIVI.
   const anyProjecting = phones.some((p) => p.presence.level === 'projecting')
 
-  // [hub] §12.2: when projecting, the HubShell root and its ancestor wrappers
-  // (content-root in AppLayout, the Box wrapper in App.tsx) must be transparent
-  // to pointer events so touches reach the projection-root (z-0, fixed) below.
-  // Interactive children (PresenceRow, HealthDot, RingBanner, FirstRunChip)
-  // re-enable pointer-events: auto explicitly. Without this, the transparent
-  // HubShell root still captures touches (pointer-events defaults to auto) and
-  // AA touch never reaches the videoContainer's multi-touch handler.
+  // [hub] §12.2: when projecting, ALL DOM elements between the HubShell and
+  // the projection-root (z-0, fixed) must be transparent to pointer events.
+  // The projection-root sits at z-0, but #content-root (position:relative) and
+  // its child wrappers paint on top because they come later in DOM order.
+  // Without pointer-events:none on these wrappers, touches are captured before
+  // reaching the projection-root's videoContainer multi-touch handler.
+  //
+  // We target #content-root (id in AppLayout) and all ancestor wrappers up to
+  // (not including) <body>. A MutationObserver re-applies on DOM mutations
+  // because React may re-render wrapper elements, resetting inline styles.
   useEffect(() => {
-    const shell = document.querySelector('[data-testid="hub-shell"]') as HTMLElement | null
-    if (!shell) return
-    // Collect ancestors up to (not including) <body> that would intercept.
-    const ancestors: HTMLElement[] = []
-    let el: HTMLElement | null = shell.parentElement
-    while (el && el.tagName !== 'BODY') {
-      ancestors.push(el)
-      el = el.parentElement
+    const apply = () => {
+      // Start from #content-root (the closest wrapper above hub-shell that
+      // creates a stacking context with position:relative).
+      const contentRoot = document.getElementById('content-root')
+      if (!contentRoot) return
+      const targets: HTMLElement[] = [contentRoot]
+      let el: HTMLElement | null = contentRoot.parentElement
+      while (el && el.tagName !== 'BODY') {
+        targets.push(el)
+        el = el.parentElement
+      }
+      const val = anyProjecting ? 'none' : ''
+      targets.forEach((t) => (t.style.pointerEvents = val))
     }
-    if (anyProjecting) {
-      ancestors.forEach((a) => (a.style.pointerEvents = 'none'))
-    } else {
-      ancestors.forEach((a) => (a.style.pointerEvents = ''))
-    }
+    // Run immediately
+    apply()
+    // Re-apply if the DOM mutates (React re-renders may reset inline styles)
+    const obs = new MutationObserver(() => apply())
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true })
     return () => {
-      ancestors.forEach((a) => (a.style.pointerEvents = ''))
+      obs.disconnect()
+      // Restore on unmount
+      const contentRoot = document.getElementById('content-root')
+      if (contentRoot) {
+        const targets: HTMLElement[] = [contentRoot]
+        let el: HTMLElement | null = contentRoot.parentElement
+        while (el && el.tagName !== 'BODY') {
+          targets.push(el)
+          el = el.parentElement
+        }
+        targets.forEach((t) => (t.style.pointerEvents = ''))
+      }
     }
   }, [anyProjecting])
 
