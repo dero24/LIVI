@@ -62,6 +62,12 @@ export function HubShell() {
   const homePhones = phones.filter(isHome)
   const connecting = state === null || stale
   const ring = state?.ring ?? null
+  // [hub] §12.2: when a phone is projecting, the HubShell becomes a transparent
+  // hole below the presence bar so the native GStreamer video plane (composited
+  // behind the Electron window) shows through. The presence bar stays opaque —
+  // it is the view-area inset. The video plane is toggled by Projection.tsx
+  // (setVisible + show-video class), gated on receivingVideo from LIVI.
+  const anyProjecting = phones.some((p) => p.presence.level === 'projecting')
 
   return (
     <Box
@@ -72,7 +78,7 @@ export function HubShell() {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: t.bg,
+        backgroundColor: anyProjecting ? 'transparent' : t.bg,
         color: t.text,
         overflow: 'hidden'
       }}
@@ -96,19 +102,26 @@ export function HubShell() {
               justifyContent: 'center',
               gap: '0.75rem',
               padding: '1rem',
-              textAlign: 'center'
+              textAlign: 'center',
+              // [hub] §12.2: transparent hole — let the video plane show through
+              // and let touch events pass to the projection layer below.
+              pointerEvents: anyProjecting ? 'none' : 'auto'
             }}
           >
-            <Typography sx={{ fontSize: 'clamp(1.5rem, 6vmin, 3rem)', fontWeight: 300 }}>
-              {greeting(new Date())}
-            </Typography>
-            <Typography sx={{ color: t.textMuted, fontSize: 'clamp(0.9rem, 3vmin, 1.4rem)' }}>
-              {homePhones.length === 0
-                ? 'Nobody is home right now'
-                : homePhones.length === phones.length
-                  ? 'Everyone is home'
-                  : `${homePhones.length} of ${phones.length} home`}
-            </Typography>
+            {!anyProjecting && (
+              <>
+                <Typography sx={{ fontSize: 'clamp(1.5rem, 6vmin, 3rem)', fontWeight: 300 }}>
+                  {greeting(new Date())}
+                </Typography>
+                <Typography sx={{ color: t.textMuted, fontSize: 'clamp(0.9rem, 3vmin, 1.4rem)' }}>
+                  {homePhones.length === 0
+                    ? 'Nobody is home right now'
+                    : homePhones.length === phones.length
+                      ? 'Everyone is home'
+                      : `${homePhones.length} of ${phones.length} home`}
+                </Typography>
+              </>
+            )}
           </Box>
         </>
       )}

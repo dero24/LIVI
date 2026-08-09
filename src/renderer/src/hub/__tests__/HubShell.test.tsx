@@ -160,4 +160,53 @@ describe('HubShell', () => {
     fireEvent.click(screen.getByTestId('hub-ring-bring-to-hub'))
     expect(intent).toHaveBeenCalledWith({ type: 'ring.bringToHub', phoneId: 'P1' })
   })
+
+  it('makes the shell a transparent hole when a phone is projecting (§12.2)', async () => {
+    installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Pixel', colour: '#4F7CAC' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'projecting', rank: 4 },
+            livi: { batteryLevel: 82 }
+          }
+        ]
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-presence-row')).toBeInTheDocument())
+    const shell = screen.getByTestId('hub-shell')
+    // Root background must be transparent so the video plane shows through.
+    // jsdom computes 'transparent' as rgba(0, 0, 0, 0).
+    expect(shell).toHaveStyle({ backgroundColor: 'rgba(0, 0, 0, 0)' })
+    // The greeting text must NOT be rendered — the video plane occupies that area.
+    expect(screen.queryByText(/good (morning|afternoon|evening)/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the opaque background and greeting when phones are docked but not projecting', async () => {
+    installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Pixel', colour: '#4F7CAC' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'docked', rank: 3 },
+            livi: { batteryLevel: 82 }
+          }
+        ]
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-presence-row')).toBeInTheDocument())
+    const shell = screen.getByTestId('hub-shell')
+    // Root background must be the token bg (opaque) — no video to show through.
+    expect(shell).not.toHaveStyle({ backgroundColor: 'transparent' })
+    // The greeting text IS rendered.
+    expect(screen.getByText(/good (morning|afternoon|evening)/i)).toBeInTheDocument()
+  })
 })

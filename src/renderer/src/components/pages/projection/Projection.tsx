@@ -8,6 +8,7 @@ import { createProjectionWorker } from '@worker/createProjectionWorker'
 import type { KeyCommand, ProjectionWorker, UsbEvent, WorkerToUI } from '@worker/types'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
+import { ROUTES } from '../../../constants'
 import { useFftPcm } from '../../../hooks/useFftPcm'
 import {
   type ActiveProtocol,
@@ -126,10 +127,17 @@ const CarplayComponent: React.FC<CarplayProps> = ({
     void window.projection.ipc.sendFrame().catch(() => {})
   }, [pathname, isProjectionActive])
 
-  // Tell main when the projection surface is shown/hidden so the native
-  // GStreamer video can be shown over the UI or hidden behind it
+  // [hub] §12.2: the video plane is a native GStreamer surface composited
+  // behind the transparent Electron window. setVisible tells main to composite
+  // (or hide) it; the `show-video` class makes the window transparent so the
+  // plane shows through where React paints no opaque pixels. On '/' (plain AA)
+  // the plane is always visible. On '/hub' the plane is visible only while
+  // receiving video — the HubShell paints a transparent hole below the presence
+  // bar (the inset) so the plane shows through, and hides the plane (screensaver
+  // / landing) otherwise.
   useEffect(() => {
-    const visible = pathname === '/'
+    const onHub = pathname === ROUTES.HUB
+    const visible = pathname === '/' || (onHub && receivingVideo)
     void window.projection.ipc.setVisible(visible).catch(() => {})
     document.documentElement.classList.toggle('show-video', visible && receivingVideo)
   }, [pathname, receivingVideo])
@@ -606,7 +614,12 @@ const CarplayComponent: React.FC<CarplayProps> = ({
   const mode: 'dongle' | 'phone' = !isProjectionActive ? 'dongle' : 'phone'
 
   const inProjection = pathname === '/'
-  const showProjectionOverlay = inProjection
+  const onHub = pathname === ROUTES.HUB
+  // [hub] On /hub the projection-root sits behind the HubShell (z-index 0, not
+  // 999) so the presence bar and ring banner render on top. The HubShell paints
+  // a transparent content hole so the video plane shows through; touch events
+  // pass through that hole to the videoContainer's multi-touch handlers.
+  const showProjectionOverlay = inProjection || (onHub && receivingVideo)
 
   const resolvedNegotiatedWidth = negotiatedWidth ?? 0
   const resolvedNegotiatedHeight = negotiatedHeight ?? 0
@@ -653,8 +666,11 @@ const CarplayComponent: React.FC<CarplayProps> = ({
         visibility: showProjectionOverlay ? 'visible' : 'hidden',
         opacity: showProjectionOverlay ? 1 : 0,
         transition: 'opacity 120ms ease',
-        pointerEvents: inProjection && isStreaming ? 'auto' : 'none',
-        zIndex: showProjectionOverlay ? 999 : -1
+        pointerEvents:
+          (inProjection && isStreaming) || (onHub && receivingVideo) ? 'auto' : 'none',
+        // [hub] z-999 on '/' (on top, plain AA). z-0 on '/hub' (behind HubShell
+        // so the presence bar / ring banner render above the video plane).
+        zIndex: inProjection ? 999 : showProjectionOverlay ? 0 : -1
       }}
     >
       {pathname === '/' && (

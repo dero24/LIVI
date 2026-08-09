@@ -214,6 +214,28 @@ describe('Projection page', () => {
     expect(setReceivingVideo).toHaveBeenCalledWith(false)
   })
 
+  test('[hub] setVisible(true) on /hub when receivingVideo (§12.2 transparent hole)', async () => {
+    mockPathname = '/hub'
+    const setVisible = (window as any).projection.ipc.setVisible as ReturnType<typeof vi.fn>
+    setVisible.mockClear()
+
+    render(<Projection {...baseProps()} receivingVideo />)
+
+    await waitFor(() => expect(setVisible).toHaveBeenCalledWith(true))
+    expect(document.documentElement.classList.contains('show-video')).toBe(true)
+  })
+
+  test('[hub] setVisible(false) on /hub when not receivingVideo (screensaver/landing)', async () => {
+    mockPathname = '/hub'
+    const setVisible = (window as any).projection.ipc.setVisible as ReturnType<typeof vi.fn>
+    setVisible.mockClear()
+
+    render(<Projection {...baseProps()} receivingVideo={false} />)
+
+    await waitFor(() => expect(setVisible).toHaveBeenCalledWith(false))
+    expect(document.documentElement.classList.contains('show-video')).toBe(false)
+  })
+
   test('handles worker failure and schedules retry timer', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
