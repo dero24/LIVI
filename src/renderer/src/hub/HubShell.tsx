@@ -10,7 +10,7 @@
 //   - idle (no phones home)       -> screensaver
 //   - one or more phones          -> presence row + landing
 import { Box, Typography } from '@mui/material'
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { FirstRunChip } from './components/FirstRunChip'
 import { HealthDot } from './components/HealthDot'
 import { PresenceRow } from './components/PresenceRow'
@@ -69,6 +69,33 @@ export function HubShell() {
   // (setVisible + show-video class), gated on receivingVideo from LIVI.
   const anyProjecting = phones.some((p) => p.presence.level === 'projecting')
 
+  // [hub] §12.2: when projecting, the HubShell root and its ancestor wrappers
+  // (content-root in AppLayout, the Box wrapper in App.tsx) must be transparent
+  // to pointer events so touches reach the projection-root (z-0, fixed) below.
+  // Interactive children (PresenceRow, HealthDot, RingBanner, FirstRunChip)
+  // re-enable pointer-events: auto explicitly. Without this, the transparent
+  // HubShell root still captures touches (pointer-events defaults to auto) and
+  // AA touch never reaches the videoContainer's multi-touch handler.
+  useEffect(() => {
+    const shell = document.querySelector('[data-testid="hub-shell"]') as HTMLElement | null
+    if (!shell) return
+    // Collect ancestors up to (not including) <body> that would intercept.
+    const ancestors: HTMLElement[] = []
+    let el: HTMLElement | null = shell.parentElement
+    while (el && el.tagName !== 'BODY') {
+      ancestors.push(el)
+      el = el.parentElement
+    }
+    if (anyProjecting) {
+      ancestors.forEach((a) => (a.style.pointerEvents = 'none'))
+    } else {
+      ancestors.forEach((a) => (a.style.pointerEvents = ''))
+    }
+    return () => {
+      ancestors.forEach((a) => (a.style.pointerEvents = ''))
+    }
+  }, [anyProjecting])
+
   return (
     <Box
       data-testid="hub-shell"
@@ -80,11 +107,23 @@ export function HubShell() {
         flexDirection: 'column',
         backgroundColor: anyProjecting ? 'transparent' : t.bg,
         color: t.text,
-        overflow: 'hidden'
+        overflow: 'hidden',
+        // [hub] §12.2: transparent to events when projecting so touches pass
+        // through to the projection-root (z-0) below. Interactive children
+        // below re-enable pointer-events: auto explicitly.
+        pointerEvents: anyProjecting ? 'none' : 'auto'
       }}
     >
       {/* Health dot, always visible, top-right, out of the way. */}
-      <Box sx={{ position: 'absolute', top: '0.6rem', right: '0.6rem', zIndex: 2 }}>
+      <Box
+        sx={{
+          position: 'absolute',
+          top: '0.6rem',
+          right: '0.6rem',
+          zIndex: 2,
+          pointerEvents: 'auto'
+        }}
+      >
         <HealthDot healthy={healthy} stale={stale} />
       </Box>
 
@@ -92,7 +131,9 @@ export function HubShell() {
         <Screensaver message={connecting ? 'Connecting to the hub…' : 'Dock a phone to begin'} />
       ) : (
         <>
-          <PresenceRow phones={phones} onSelect={select} onHeight={onBarHeight} />
+          <Box sx={{ pointerEvents: 'auto' }}>
+            <PresenceRow phones={phones} onSelect={select} onHeight={onBarHeight} />
+          </Box>
           <Box
             sx={{
               flex: 1,
@@ -129,30 +170,34 @@ export function HubShell() {
       {/* [hub] G2 / §6.2: the first-run naming + enrollment chip, shown once
           per unnamed/companion-less phone. Naming is an invitation, not a gate. */}
       {phones.length > 0 && (
-        <FirstRunChip
-          phone={phones[0]}
-          onRename={(phoneId, name) => intent({ type: 'phone.rename', phoneId, name })}
-          onSetAutoDock={(phoneId, autoDock) =>
-            intent({ type: 'phone.policy', phoneId, policy: { autoDock } })
-          }
-          onEnrolStart={async (phoneId) => {
-            await intent({ type: 'phone.enrolStart', phoneId })
-          }}
-        />
+        <Box sx={{ pointerEvents: 'auto' }}>
+          <FirstRunChip
+            phone={phones[0]}
+            onRename={(phoneId, name) => intent({ type: 'phone.rename', phoneId, name })}
+            onSetAutoDock={(phoneId, autoDock) =>
+              intent({ type: 'phone.policy', phoneId, policy: { autoDock } })
+            }
+            onEnrolStart={async (phoneId) => {
+              await intent({ type: 'phone.enrolStart', phoneId })
+            }}
+          />
+        </Box>
       )}
 
       {/* [hub] Phase 2.3: the ring banner is a z-layer over whatever is on
           screen (§12.2/§12.6 state E). It preempts the screensaver, the landing
           page and projection; the previous surface is restored when it ends. */}
       {ring && (
-        <RingBanner
-          ring={ring}
-          knownPhoneCount={phones.length}
-          onAnswer={(phoneId) => intent({ type: 'ring.answer', phoneId })}
-          onDecline={(phoneId) => intent({ type: 'ring.decline', phoneId })}
-          onSilence={(phoneId) => intent({ type: 'ring.silence', phoneId })}
-          onBringToHub={(phoneId) => intent({ type: 'ring.bringToHub', phoneId })}
-        />
+        <Box sx={{ pointerEvents: 'auto' }}>
+          <RingBanner
+            ring={ring}
+            knownPhoneCount={phones.length}
+            onAnswer={(phoneId) => intent({ type: 'ring.answer', phoneId })}
+            onDecline={(phoneId) => intent({ type: 'ring.decline', phoneId })}
+            onSilence={(phoneId) => intent({ type: 'ring.silence', phoneId })}
+            onBringToHub={(phoneId) => intent({ type: 'ring.bringToHub', phoneId })}
+          />
+        </Box>
       )}
     </Box>
   )
