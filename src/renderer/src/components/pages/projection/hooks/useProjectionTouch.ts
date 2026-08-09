@@ -20,6 +20,11 @@ type TouchTransform = {
   cropTop: number
   visibleWidth: number
   visibleHeight: number
+  // [hub] §12.2: the view-area top inset (projectionViewAreaTop). The
+  // videoContainer covers the full screen, but the AA content only fills
+  // below the bar. Touches must be offset by this amount so they map to
+  // the correct position in the AA content area.
+  viewAreaTop?: number
 }
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
@@ -50,17 +55,23 @@ const norm = (
   }
 
   // display-letterbox by the content AR
+  // [hub] §12.2: the AA content starts at viewAreaTop (below the bar),
+  // not at the top of the videoContainer. Offset the Y coordinate so
+  // touches map to the correct position in the AA content area.
+  const vat = transform.viewAreaTop ?? 0
   const contentAR = transform.visibleWidth / transform.visibleHeight
+  // The display area for AA content is from viewAreaTop to bottom of container
+  const contentAreaHeight = r.height - vat
   let dispW = r.width
-  let dispH = r.height
+  let dispH = contentAreaHeight
   let offX = 0
-  let offY = 0
-  if (r.width / r.height > contentAR) {
-    dispW = r.height * contentAR
+  let offY = vat
+  if (r.width / contentAreaHeight > contentAR) {
+    dispW = contentAreaHeight * contentAR
     offX = (r.width - dispW) / 2
   } else {
     dispH = r.width / contentAR
-    offY = (r.height - dispH) / 2
+    offY = vat + (contentAreaHeight - dispH) / 2
   }
 
   const lx = cx - r.left - offX

@@ -59,27 +59,32 @@ export function HubShell() {
     }, 150)
   }, [])
 
+  const phones = state?.phones ?? []
+  const homePhones = phones.filter(isHome)
+  const connecting = state === null || stale
+  const ring = state?.ring ?? null
+
   // [hub] Measure the full bar (clock + presence row) and publish as
-  // projectionViewAreaTop. This replaces PresenceRow's own measurement
-  // now that the bar has multiple sections.
+  // projectionViewAreaTop. Re-runs when phones change (PresenceRow
+  // appears/disappears) and when the component mounts.
   useEffect(() => {
     const el = barRef.current
     if (!el) return
     const publish = (): void => {
       const h = el.getBoundingClientRect().height
-      onBarHeight(Math.round(h))
+      if (h > 0) onBarHeight(Math.round(h))
     }
-    publish()
-    if (typeof ResizeObserver === 'undefined') return
+    // Delay slightly so the clock + presence row have rendered
+    const id = setTimeout(publish, 50)
+    if (typeof ResizeObserver === 'undefined') return () => clearTimeout(id)
     const ro = new ResizeObserver(publish)
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [onBarHeight])
+    return () => {
+      clearTimeout(id)
+      ro.disconnect()
+    }
+  }, [onBarHeight, phones.length])
 
-  const phones = state?.phones ?? []
-  const homePhones = phones.filter(isHome)
-  const connecting = state === null || stale
-  const ring = state?.ring ?? null
   // [hub] §12.2: when a phone is projecting, the HubShell becomes a transparent
   // hole below the presence bar so the native GStreamer video plane (composited
   // behind the Electron window) shows through. The presence bar stays opaque —

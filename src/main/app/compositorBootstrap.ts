@@ -13,8 +13,14 @@ export function bootstrapCompositor(): boolean {
   if (process.env.LIVI_NO_COMPOSITOR === '1') return false
 
   // Packaged builds re-launch themselves inside the compositor: the AppImage
-  // via $APPIMAGE, the .deb via its own binary.
+  // via $APPIMAGE, the .deb via its own binary. When running from source
+  // (dev/fast-deploy), process.execPath is the Electron binary and the app
+  // directory is process.cwd() — we pass it as an argument so Electron loads
+  // the right package.json/main entry.
   const relaunch = process.env.APPIMAGE ?? process.execPath
+  // When running from source (no APPIMAGE), pass the app directory so Electron
+  // loads our built out/main/main.js instead of the extracted asar.
+  const appArg = process.env.APPIMAGE ? '' : ` '${process.cwd()}'`
 
   const resources = process.resourcesPath
   if (!resources) return false
@@ -23,7 +29,7 @@ export function bootstrapCompositor(): boolean {
 
   const hostLd = process.env.LD_LIBRARY_PATH ?? ''
   const inner =
-    `LIVI_COMPOSITOR=1 LD_LIBRARY_PATH='${hostLd}' ` + `'${relaunch}' --ozone-platform=wayland`
+    `LIVI_COMPOSITOR=1 LD_LIBRARY_PATH='${hostLd}' ` + `'${relaunch}'${appArg} --ozone-platform=wayland`
 
   // Control socket: the host drives screen outputs + video placement/crop/visibility over this
   const runtimeDir = process.env.XDG_RUNTIME_DIR || '/tmp'
