@@ -10,7 +10,7 @@
 //   - idle (no phones home)       -> screensaver
 //   - one or more phones          -> presence row + landing
 import { Box, Typography } from '@mui/material'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { FirstRunChip } from './components/FirstRunChip'
 import { HealthDot } from './components/HealthDot'
 import { PresenceRow } from './components/PresenceRow'
@@ -48,6 +48,7 @@ export function HubShell() {
   // area top inset. ServiceDiscoveryBuilder scales display→tier px. Debounced
   // so a resize storm doesn't spam settings.save.
   const viewAreaTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const barRef = useRef<HTMLDivElement | null>(null)
   const onBarHeight = useCallback((px: number) => {
     if (viewAreaTimer.current) clearTimeout(viewAreaTimer.current)
     viewAreaTimer.current = setTimeout(() => {
@@ -57,6 +58,23 @@ export function HubShell() {
       })
     }, 150)
   }, [])
+
+  // [hub] Measure the full bar (clock + presence row) and publish as
+  // projectionViewAreaTop. This replaces PresenceRow's own measurement
+  // now that the bar has multiple sections.
+  useEffect(() => {
+    const el = barRef.current
+    if (!el) return
+    const publish = (): void => {
+      const h = el.getBoundingClientRect().height
+      onBarHeight(Math.round(h))
+    }
+    publish()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(publish)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [onBarHeight])
 
   const phones = state?.phones ?? []
   const homePhones = phones.filter(isHome)
@@ -150,8 +168,28 @@ export function HubShell() {
         <Screensaver message={connecting ? 'Connecting to the hub…' : 'Dock a phone to begin'} />
       ) : (
         <>
-          <Box sx={{ pointerEvents: 'auto' }}>
-            <PresenceRow phones={phones} onSelect={select} onHeight={onBarHeight} />
+          {/* [hub] §12.6: the bar is a view-area inset. It contains:
+              - Clock + date (top line, large)
+              - Presence row (phone bubbles)
+              - Now-playing placeholder (bottom line)
+              The bar's total height is measured and published as
+              projectionViewAreaTop so the phone lays out below it. */}
+          <Box
+            ref={barRef}
+            sx={{
+              pointerEvents: 'auto',
+              backgroundColor: t.surface,
+              borderBottom: `1px solid ${t.border}`,
+              padding: 'clamp(0.75rem, 2vh, 1.5rem) clamp(1rem, 3vw, 2rem)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'clamp(0.5rem, 1.5vh, 1rem)'
+            }}
+          >
+            {/* Clock + date row */}
+            <ClockRow />
+            {/* Presence bubbles */}
+            <PresenceRow phones={phones} onSelect={select} />
           </Box>
           <Box
             sx={{
@@ -218,6 +256,49 @@ export function HubShell() {
           />
         </Box>
       )}
+    </Box>
+  )
+}
+
+// [hub] §12.6: clock + date row for the bar header. Updates every second.
+// Large time on the left, date on the right. Fluid sizing (§12.1).
+function ClockRow() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  const date = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: '1rem'
+      }}
+    >
+      <Typography
+        sx={{
+          fontSize: 'clamp(2.5rem, 10vmin, 5rem)',
+          fontWeight: 200,
+          lineHeight: 1,
+          fontVariantNumeric: 'tabular-nums'
+        }}
+      >
+        {time}
+      </Typography>
+      <Typography
+        sx={{
+          fontSize: 'clamp(0.8rem, 2.5vmin, 1.2rem)',
+          fontWeight: 300,
+          opacity: 0.7,
+          textAlign: 'right'
+        }}
+      >
+        {date}
+      </Typography>
     </Box>
   )
 }
