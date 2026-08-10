@@ -269,7 +269,7 @@ export function HubShell() {
         targets.push(el)
         el = el.parentElement
       }
-      const val = anyProjecting && !viewingLanding && !calibrating ? 'none' : ''
+      const val = anyProjecting && !viewingLanding ? 'none' : ''
       targets.forEach((t) => (t.style.pointerEvents = val))
     }
     // Run immediately
@@ -291,7 +291,7 @@ export function HubShell() {
         targets.forEach((t) => (t.style.pointerEvents = ''))
       }
     }
-  }, [anyProjecting, viewingLanding, calibrating])
+  }, [anyProjecting, viewingLanding])
 
   return (
     <Box
@@ -302,14 +302,17 @@ export function HubShell() {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: anyProjecting && !viewingLanding && !calibrating ? 'transparent' : t.bg,
+        // [hub] §12.2: transparent when projecting AND (viewing AA OR calibrating).
+        // During calibration, the AA dashboard must be visible through the
+        // semi-transparent overlay. During landing, opaque covers the AA video.
+        // During AA viewing, transparent so touches pass through to projection-root.
+        backgroundColor: anyProjecting && (!viewingLanding || calibrating) ? 'transparent' : t.bg,
         color: t.text,
         overflow: 'hidden',
-        // [hub] §12.2: transparent to events when projecting AND viewing AA
-        // (not landing) so touches pass through to the projection-root (z-0).
-        // When viewing the landing page or calibrating, keep events so the
-        // landing page tiles / calibration overlay are interactive.
-        pointerEvents: anyProjecting && !viewingLanding && !calibrating ? 'none' : 'auto'
+        // [hub] §12.2: transparent to events when projecting AND (viewing AA
+        // OR calibrating) so touches pass through to the projection-root.
+        // When viewing the landing page, keep events so tiles are interactive.
+        pointerEvents: anyProjecting && !viewingLanding ? 'none' : 'auto'
       }}
     >
       {/* Health dot, always visible, top-right, out of the way. */}
