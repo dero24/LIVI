@@ -50,12 +50,13 @@
               background-color: transparent;
             }
 
-            /* [hub] §12.2: touch passthrough — when projecting AND viewing AA,
-               touches must pass through #content-root to reach the projection-root
-               (z-0) below. Toggled via CSS class on <html> + inline style on
-               #content-root. The bar and interactive children override with
-               pointer-events:auto. */
-            html.hub-touch-passthrough #content-root {
+            /* [hub] §12.2: touch passthrough — when AA video is showing AND
+               the hub shell is in AA mode (not landing), touches must pass
+               through #content-root to reach the projection-root (z-0) below.
+               The 'show-video' class is toggled by Projection.tsx when
+               receivingVideo. The 'hub-aa-mode' class is toggled by HubShell
+               when viewingLanding becomes false (user entered AA). */
+            html.show-video.hub-aa-mode #content-root {
               pointer-events: none;
             }
     </style>

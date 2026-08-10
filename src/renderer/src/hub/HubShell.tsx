@@ -247,19 +247,19 @@ export function HubShell() {
     }
   }, [projectingPhone, calibrationApp])
 
-  // [hub] §12.2: when projecting AND viewing AA (not landing), touches must
-  // pass through #content-root to reach the projection-root (z-0, fixed)
-  // below. We set pointer-events:none on #content-root directly — one-shot,
-  // no observer. The HubShell root also has pointer-events:none inline.
-  // The bar and interactive children override with pointer-events:auto.
+  // [hub] §12.2: when viewing AA (not landing), toggle 'hub-aa-mode' class
+  // on <html>. Combined with 'show-video' (toggled by Projection.tsx), the
+  // CSS rule in index.html sets pointer-events:none on #content-root so
+  // touches reach the projection-root (z-0) below. Also set inline style
+  // as a backup for browsers that don't support the class combination.
   useEffect(() => {
-    const passThrough = anyProjecting && !viewingLanding
+    const aaMode = anyProjecting && !viewingLanding
+    document.documentElement.classList.toggle('hub-aa-mode', aaMode)
     const contentRoot = document.getElementById('content-root')
-    if (contentRoot) contentRoot.style.pointerEvents = passThrough ? 'none' : ''
-    document.documentElement.classList.toggle('hub-touch-passthrough', passThrough)
+    if (contentRoot) contentRoot.style.pointerEvents = aaMode ? 'none' : ''
     return () => {
+      document.documentElement.classList.remove('hub-aa-mode')
       if (contentRoot) contentRoot.style.pointerEvents = ''
-      document.documentElement.classList.remove('hub-touch-passthrough')
     }
   }, [anyProjecting, viewingLanding])
 
