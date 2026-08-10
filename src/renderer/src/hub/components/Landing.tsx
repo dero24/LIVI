@@ -79,6 +79,10 @@ export function getCalibration(phoneId: string, appKey: string): CalibData | nul
 export function Landing({ phone, onTileTap, onFullApps }: LandingProps) {
   const t = useHubTokens()
   const [calibData, setCalibData] = useState(() => loadCalibration(phone.phoneId))
+  const personName = phone.person?.name ?? 'Unknown'
+  const personColor = phone.person?.colour ?? '#4F7CAC'
+  const personAvatar = phone.person?.avatar
+  const isPrimary = phone.person?.isPrimary
 
   // Reload calibration when phone changes
   useEffect(() => {
@@ -97,15 +101,89 @@ export function Landing({ phone, onTileTap, onFullApps }: LandingProps) {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: 'clamp(1rem, 3vh, 2rem)',
-        padding: 'clamp(1rem, 3vw, 2rem)',
+        justifyContent: 'flex-start',
+        gap: 'clamp(0.75rem, 2vh, 1.5rem)',
+        padding: 'clamp(0.75rem, 2vw, 1.5rem)',
         backgroundColor: t.bg,
         zIndex: 5,
         transition: 'opacity 400ms cubic-bezier(0.4, 0, 0.2, 1)',
-        pointerEvents: 'auto'
+        pointerEvents: 'auto',
+        overflow: 'hidden'
       }}
     >
+      {/* [hub] §12.6: person-colored header — makes it instantly clear whose
+          phone is active. The accent bar uses the person's colour, and the
+          name + avatar are the first thing the user sees. */}
+      <Box
+        sx={{
+          width: '100%',
+          maxWidth: '500px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          padding: '0.5rem 0'
+        }}
+      >
+        {/* Person colour accent bar */}
+        <Box
+          sx={{
+            width: '4px',
+            height: 'clamp(2rem, 6vh, 3rem)',
+            borderRadius: '2px',
+            backgroundColor: personColor,
+            flexShrink: 0
+          }}
+        />
+        {/* Avatar (if available) or initials */}
+        {personAvatar ? (
+          <Box
+            component="img"
+            src={personAvatar}
+            sx={{
+              width: 'clamp(2rem, 6vh, 3rem)',
+              height: 'clamp(2rem, 6vh, 3rem)',
+              borderRadius: '50%',
+              objectFit: 'cover',
+              flexShrink: 0
+            }}
+          />
+        ) : (
+          <Box
+            sx={{
+              width: 'clamp(2rem, 6vh, 3rem)',
+              height: 'clamp(2rem, 6vh, 3rem)',
+              borderRadius: '50%',
+              backgroundColor: personColor,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              color: '#fff',
+              fontSize: 'clamp(1rem, 3vh, 1.5rem)',
+              fontWeight: 500
+            }}
+          >
+            {personName.charAt(0).toUpperCase()}
+          </Box>
+        )}
+        <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+          <Typography
+            sx={{
+              fontSize: 'clamp(1.1rem, 4vmin, 1.8rem)',
+              fontWeight: 500,
+              lineHeight: 1.2
+            }}
+          >
+            {personName}&apos;s Phone
+          </Typography>
+          {isPrimary && (
+            <Typography sx={{ fontSize: '0.75rem', color: t.textMuted }}>
+              Primary phone
+            </Typography>
+          )}
+        </Box>
+      </Box>
+
       {/* 2x2 tile grid */}
       <Box
         sx={{
@@ -113,7 +191,9 @@ export function Landing({ phone, onTileTap, onFullApps }: LandingProps) {
           gridTemplateColumns: '1fr 1fr',
           gap: 'clamp(0.75rem, 2vw, 1.25rem)',
           width: '100%',
-          maxWidth: '500px'
+          maxWidth: '500px',
+          flex: 1,
+          alignContent: 'center'
         }}
       >
         {TILES.map((tile) => {

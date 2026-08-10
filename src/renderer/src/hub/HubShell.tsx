@@ -204,21 +204,48 @@ export function HubShell() {
       const existing = loadCalibration(projectingPhone.phoneId)
       existing[calibrationApp] = { x, y, sequence }
       saveCalibration(projectingPhone.phoneId, existing)
-      // Move to next uncalibrated app or finish
-      setCalibrating(false)
-      setCalibrationApp(null)
-      setCalibrationStep(0)
-      // Go back to dashboard for the next calibration or landing
-      window.projection.ipc.sendCommand('home')
+      // Check if there are more uncalibrated apps to calibrate
+      const nextApp = LANDING_TILES.find(
+        (t) => t.calibratable && t.key !== calibrationApp && !existing[t.key]
+      )
+      if (nextApp) {
+        // Continue to next app
+        setCalibrationApp(nextApp.key)
+        setCalibrationStep((s) => s + 1)
+        // Go back to dashboard for the next calibration
+        window.projection.ipc.sendCommand('home')
+      } else {
+        // All apps calibrated — return to landing
+        setCalibrating(false)
+        setCalibrationApp(null)
+        setCalibrationStep(0)
+      }
     },
     [projectingPhone, calibrationApp]
   )
 
   const handleCalibrationSkip = useCallback(() => {
-    setCalibrating(false)
-    setCalibrationApp(null)
-    setCalibrationStep(0)
-  }, [])
+    if (!projectingPhone || !calibrationApp) {
+      setCalibrating(false)
+      setCalibrationApp(null)
+      setCalibrationStep(0)
+      return
+    }
+    // Check if there are more uncalibrated apps (excluding the skipped one)
+    const existing = loadCalibration(projectingPhone.phoneId)
+    const nextApp = LANDING_TILES.find(
+      (t) => t.calibratable && t.key !== calibrationApp && !existing[t.key]
+    )
+    if (nextApp) {
+      setCalibrationApp(nextApp.key)
+      setCalibrationStep((s) => s + 1)
+      window.projection.ipc.sendCommand('home')
+    } else {
+      setCalibrating(false)
+      setCalibrationApp(null)
+      setCalibrationStep(0)
+    }
+  }, [projectingPhone, calibrationApp])
 
   // [hub] §12.2: when projecting, ALL DOM elements between the HubShell and
   // the projection-root (z-0, fixed) must be transparent to pointer events.
@@ -406,6 +433,42 @@ export function HubShell() {
               await intent({ type: 'phone.enrolStart', phoneId })
             }}
           />
+        </Box>
+      )}
+
+      {/* [hub] Home button — floating, top-left of the AA area. Returns from
+          AA to the landing page. Only visible when viewing AA (not landing). */}
+      {anyProjecting && !viewingLanding && !calibrating && (
+        <Box
+          onClick={() => setViewingLanding(true)}
+          sx={{
+            position: 'absolute',
+            top: 'clamp(0.5rem, 1.5vh, 1rem)',
+            left: 'clamp(0.5rem, 1.5vw, 1rem)',
+            zIndex: 10,
+            pointerEvents: 'auto',
+            width: 'clamp(2.5rem, 8vmin, 3.5rem)',
+            height: 'clamp(2.5rem, 8vmin, 3.5rem)',
+            borderRadius: '50%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            color: '#fff',
+            fontSize: 'clamp(1.2rem, 4vmin, 1.8rem)',
+            transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+            '&:hover': {
+              backgroundColor: 'rgba(0,0,0,0.7)',
+              transform: 'scale(1.05)'
+            },
+            '&:active': {
+              transform: 'scale(0.95)'
+            }
+          }}
+        >
+          {/* Home icon (simple house glyph) */}
+          {'\u{1F3E0}'}
         </Box>
       )}
 
