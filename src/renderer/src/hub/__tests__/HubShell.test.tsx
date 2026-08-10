@@ -179,11 +179,13 @@ describe('HubShell', () => {
     renderShell()
     await waitFor(() => expect(screen.getByTestId('hub-presence-row')).toBeInTheDocument())
     const shell = screen.getByTestId('hub-shell')
-    // Root background must be transparent so the video plane shows through.
-    // jsdom computes 'transparent' as rgba(0, 0, 0, 0).
-    expect(shell).toHaveStyle({ backgroundColor: 'rgba(0, 0, 0, 0)' })
-    // The greeting text must NOT be rendered — the video plane occupies that area.
+    // When projecting with the landing page visible (default), the background
+    // is opaque (the landing page covers the AA video). The greeting text is
+    // NOT rendered — the landing page tiles occupy that area.
+    expect(shell).not.toHaveStyle({ backgroundColor: 'rgba(0, 0, 0, 0)' })
     expect(screen.queryByText(/good (morning|afternoon|evening)/i)).not.toBeInTheDocument()
+    // The landing page should be visible
+    expect(screen.getByTestId('hub-landing')).toBeInTheDocument()
   })
 
   it('keeps the opaque background and greeting when phones are docked but not projecting', async () => {

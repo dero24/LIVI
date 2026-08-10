@@ -667,7 +667,10 @@ export class AaSession extends EventEmitter implements IPhoneDriver {
       [InputCommand.AcceptCall]: BUTTON_KEY.PHONE_ACCEPT,
       [InputCommand.RejectCall]: BUTTON_KEY.PHONE_DECLINE,
       [InputCommand.HookSwitch]: BUTTON_KEY.HEADSETHOOK,
-      [InputCommand.VoiceAssistant]: BUTTON_KEY.SEARCH
+      [InputCommand.VoiceAssistant]: BUTTON_KEY.SEARCH,
+      // [hub] AA navigation for landing page app switching
+      [InputCommand.Home]: BUTTON_KEY.HOME,
+      [InputCommand.Back]: BUTTON_KEY.BACK
     }
     const keyCode = map[command]
     if (keyCode === undefined) {

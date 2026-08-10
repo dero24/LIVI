@@ -13,6 +13,17 @@ import { Box, Typography } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FirstRunChip } from './components/FirstRunChip'
 import { HealthDot } from './components/HealthDot'
+import {
+  Landing,
+  CalibrationOverlay,
+  LANDING_TILES,
+  loadCalibration,
+  saveCalibration,
+  isCalibrated,
+  getCalibration,
+  type LandingTile,
+  type CalibData
+} from './components/Landing'
 import { PresenceRow } from './components/PresenceRow'
 import { RingBanner } from './components/RingBanner'
 import { Screensaver } from './components/Screensaver'
@@ -92,6 +103,123 @@ export function HubShell() {
   // (setVisible + show-video class), gated on receivingVideo from LIVI.
   const anyProjecting = phones.some((p) => p.presence.level === 'projecting')
 
+  // [hub] §12.4/§12.6: landing page state. When a phone is projecting, show
+  // the landing page (tiles) on top of the AA video. The user taps a tile to
+  // enter AA. This is a local state within the projection surface — the
+  // SurfaceManager still says 'projection' is active.
+  const [viewingLanding, setViewingLanding] = useState(true)
+  const [calibrating, setCalibrating] = useState(false)
+  const [calibrationStep, setCalibrationStep] = useState(0)
+  const [calibrationApp, setCalibrationApp] = useState<string | null>(null)
+  const [navigating, setNavigating] = useState(false)
+  const projectingPhone = phones.find((p) => p.presence.level === 'projecting') ?? null
+
+  // Reset landing state when phone changes
+  useEffect(() => {
+    setViewingLanding(true)
+    setCalibrating(false)
+    setCalibrationStep(0)
+  }, [projectingPhone?.phoneId])
+
+  // --- App navigation (invisible, with fade) ---
+  const navigateToApp = useCallback(
+    (appKey: string, onComplete: () => void) => {
+      if (!projectingPhone) {
+        onComplete()
+        return
+      }
+      const pos = getCalibration(projectingPhone.phoneId, appKey)
+      // 1. Go to AA dashboard
+      window.projection.ipc.sendCommand('home')
+      // 2. Wait for dashboard to render
+      setTimeout(() => {
+        if (pos && pos.sequence && pos.sequence.length > 0) {
+          // 3. Replay recorded touch sequence
+          let i = 0
+          const playNext = () => {
+            if (i >= pos.sequence.length) {
+              setTimeout(onComplete, 500)
+              return
+            }
+            const evt = pos.sequence[i]
+            window.projection.ipc.sendTouch(
+              evt.x / window.innerWidth,
+              evt.y / window.innerHeight,
+              evt.action
+            )
+            i++
+            const nextDelay = Math.min(evt.delay, 50)
+            setTimeout(playNext, nextDelay)
+          }
+          playNext()
+        } else if (pos && pos.x !== undefined) {
+          // Fallback: just tap the recorded position
+          window.projection.ipc.sendTouch(pos.x / window.innerWidth, pos.y / window.innerHeight, 14)
+          setTimeout(() => {
+            window.projection.ipc.sendTouch(pos.x / window.innerWidth, pos.y / window.innerHeight, 16)
+            setTimeout(onComplete, 800)
+          }, 100)
+        } else {
+          onComplete()
+        }
+      }, 800)
+    },
+    [projectingPhone]
+  )
+
+  const handleTileTap = useCallback(
+    (tile: LandingTile) => {
+      if (!projectingPhone) return
+      if (tile.calibratable && !isCalibrated(projectingPhone.phoneId, tile.key)) {
+        // Start calibration for this specific app
+        setCalibrationApp(tile.key)
+        setCalibrationStep(1)
+        setCalibrating(true)
+        // Show AA dashboard for calibration
+        window.projection.ipc.sendCommand('home')
+        setTimeout(() => {
+          // The calibration overlay will handle the rest
+        }, 800)
+        return
+      }
+      // Navigate to the app invisibly, then fade to AA
+      setNavigating(true)
+      navigateToApp(tile.key, () => {
+        setNavigating(false)
+        setViewingLanding(false)
+      })
+    },
+    [projectingPhone, navigateToApp]
+  )
+
+  const handleFullApps = useCallback(() => {
+    window.projection.ipc.sendCommand('home')
+    setViewingLanding(false)
+  }, [])
+
+  // --- Calibration ---
+  const handleCalibrationRecord = useCallback(
+    (x: number, y: number, sequence: CalibData['sequence']) => {
+      if (!projectingPhone || !calibrationApp) return
+      const existing = loadCalibration(projectingPhone.phoneId)
+      existing[calibrationApp] = { x, y, sequence }
+      saveCalibration(projectingPhone.phoneId, existing)
+      // Move to next uncalibrated app or finish
+      setCalibrating(false)
+      setCalibrationApp(null)
+      setCalibrationStep(0)
+      // Go back to dashboard for the next calibration or landing
+      window.projection.ipc.sendCommand('home')
+    },
+    [projectingPhone, calibrationApp]
+  )
+
+  const handleCalibrationSkip = useCallback(() => {
+    setCalibrating(false)
+    setCalibrationApp(null)
+    setCalibrationStep(0)
+  }, [])
+
   // [hub] §12.2: when projecting, ALL DOM elements between the HubShell and
   // the projection-root (z-0, fixed) must be transparent to pointer events.
   // The projection-root sits at z-0, but #content-root (position:relative) and
@@ -114,7 +242,7 @@ export function HubShell() {
         targets.push(el)
         el = el.parentElement
       }
-      const val = anyProjecting ? 'none' : ''
+      const val = anyProjecting && !viewingLanding && !calibrating ? 'none' : ''
       targets.forEach((t) => (t.style.pointerEvents = val))
     }
     // Run immediately
@@ -136,7 +264,7 @@ export function HubShell() {
         targets.forEach((t) => (t.style.pointerEvents = ''))
       }
     }
-  }, [anyProjecting])
+  }, [anyProjecting, viewingLanding, calibrating])
 
   return (
     <Box
@@ -147,13 +275,14 @@ export function HubShell() {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: anyProjecting ? 'transparent' : t.bg,
+        backgroundColor: anyProjecting && !viewingLanding && !calibrating ? 'transparent' : t.bg,
         color: t.text,
         overflow: 'hidden',
-        // [hub] §12.2: transparent to events when projecting so touches pass
-        // through to the projection-root (z-0) below. Interactive children
-        // below re-enable pointer-events: auto explicitly.
-        pointerEvents: anyProjecting ? 'none' : 'auto'
+        // [hub] §12.2: transparent to events when projecting AND viewing AA
+        // (not landing) so touches pass through to the projection-root (z-0).
+        // When viewing the landing page or calibrating, keep events so the
+        // landing page tiles / calibration overlay are interactive.
+        pointerEvents: anyProjecting && !viewingLanding && !calibrating ? 'none' : 'auto'
       }}
     >
       {/* Health dot, always visible, top-right, out of the way. */}
@@ -188,7 +317,10 @@ export function HubShell() {
               padding: 'clamp(0.75rem, 2vh, 1.5rem) clamp(1rem, 3vw, 2rem)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 'clamp(0.5rem, 1.5vh, 1rem)'
+              gap: 'clamp(0.5rem, 1.5vh, 1rem)',
+              // [hub] §12.6: min height so AA gets a nearly square area below
+              // the bar (~400px on a 1024px panel = 600x624 AA area).
+              minHeight: 'clamp(300px, 40vh, 450px)'
             }}
           >
             {/* Clock + date row */}
@@ -208,9 +340,40 @@ export function HubShell() {
               textAlign: 'center',
               // [hub] §12.2: transparent hole — let the video plane show through
               // and let touch events pass to the projection layer below.
-              pointerEvents: anyProjecting ? 'none' : 'auto'
+              pointerEvents: anyProjecting && !viewingLanding ? 'none' : 'auto'
             }}
           >
+            {/* [hub] §12.4: landing page overlay when projecting. Shows tiles
+                on top of the AA video. Fades out when user enters AA. */}
+            {anyProjecting && viewingLanding && projectingPhone && (
+              <Landing
+                phone={projectingPhone}
+                onTileTap={handleTileTap}
+                onFullApps={handleFullApps}
+              />
+            )}
+
+            {/* Navigation pulse indicator */}
+            {navigating && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  fontSize: '1.2rem',
+                  color: t.textMuted,
+                  animation: 'pulse 1s ease-in-out infinite',
+                  '@keyframes pulse': {
+                    '0%, 100%': { opacity: 1 },
+                    '50%': { opacity: 0.5 }
+                  }
+                }}
+              >
+                Opening…
+              </Box>
+            )}
+
             {!anyProjecting && (
               <>
                 <Typography sx={{ fontSize: 'clamp(1.5rem, 6vmin, 3rem)', fontWeight: 300 }}>
@@ -260,6 +423,19 @@ export function HubShell() {
             onBringToHub={(phoneId) => intent({ type: 'ring.bringToHub', phoneId })}
           />
         </Box>
+      )}
+
+      {/* [hub] Calibration overlay — shown when user taps an uncalibrated tile.
+          The AA dashboard is visible through the semi-transparent overlay. */}
+      {calibrating && calibrationApp && projectingPhone && (
+        <CalibrationOverlay
+          appLabel={calibrationApp.charAt(0).toUpperCase() + calibrationApp.slice(1)}
+          appIcon={LANDING_TILES.find((t) => t.key === calibrationApp)?.icon ?? '?'}
+          step={calibrationStep}
+          totalSteps={3}
+          onRecord={handleCalibrationRecord}
+          onSkip={handleCalibrationSkip}
+        />
       )}
     </Box>
   )
