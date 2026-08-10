@@ -247,50 +247,15 @@ export function HubShell() {
     }
   }, [projectingPhone, calibrationApp])
 
-  // [hub] §12.2: when projecting, ALL DOM elements between the HubShell and
-  // the projection-root (z-0, fixed) must be transparent to pointer events.
-  // The projection-root sits at z-0, but #content-root (position:relative) and
-  // its child wrappers paint on top because they come later in DOM order.
-  // Without pointer-events:none on these wrappers, touches are captured before
-  // reaching the projection-root's videoContainer multi-touch handler.
-  //
-  // We target #content-root (id in AppLayout) and all ancestor wrappers up to
-  // (not including) <body>. A MutationObserver re-applies on DOM mutations
-  // because React may re-render wrapper elements, resetting inline styles.
+  // [hub] §12.2: when projecting AND viewing AA (not landing), touches must
+  // pass through #content-root and its ancestors to reach the projection-root
+  // (z-0, fixed) below. We toggle a CSS class on <html> — the browser's CSS
+  // engine handles the rest at zero JavaScript cost. No MutationObserver
+  // (which caused severe lag by firing on every clock tick / re-render).
   useEffect(() => {
-    const apply = () => {
-      // Start from #content-root (the closest wrapper above hub-shell that
-      // creates a stacking context with position:relative).
-      const contentRoot = document.getElementById('content-root')
-      if (!contentRoot) return
-      const targets: HTMLElement[] = [contentRoot]
-      let el: HTMLElement | null = contentRoot.parentElement
-      while (el && el.tagName !== 'BODY') {
-        targets.push(el)
-        el = el.parentElement
-      }
-      const val = anyProjecting && !viewingLanding ? 'none' : ''
-      targets.forEach((t) => (t.style.pointerEvents = val))
-    }
-    // Run immediately
-    apply()
-    // Re-apply if the DOM mutates (React re-renders may reset inline styles)
-    const obs = new MutationObserver(() => apply())
-    obs.observe(document.body, { childList: true, subtree: true, attributes: true })
-    return () => {
-      obs.disconnect()
-      // Restore on unmount
-      const contentRoot = document.getElementById('content-root')
-      if (contentRoot) {
-        const targets: HTMLElement[] = [contentRoot]
-        let el: HTMLElement | null = contentRoot.parentElement
-        while (el && el.tagName !== 'BODY') {
-          targets.push(el)
-          el = el.parentElement
-        }
-        targets.forEach((t) => (t.style.pointerEvents = ''))
-      }
-    }
+    const passThrough = anyProjecting && !viewingLanding
+    document.documentElement.classList.toggle('hub-touch-passthrough', passThrough)
+    return () => document.documentElement.classList.remove('hub-touch-passthrough')
   }, [anyProjecting, viewingLanding])
 
   return (
@@ -374,8 +339,10 @@ export function HubShell() {
             }}
           >
             {/* [hub] §12.4: landing page overlay when projecting. Shows tiles
-                on top of the AA video. Fades out when user enters AA. */}
-            {anyProjecting && viewingLanding && projectingPhone && (
+                on top of the AA video. Fades out when user enters AA.
+                Hidden during calibration so AA dashboard is visible through
+                the semi-transparent CalibrationOverlay. */}
+            {anyProjecting && viewingLanding && !calibrating && projectingPhone && (
               <Landing
                 phone={projectingPhone}
                 onTileTap={handleTileTap}

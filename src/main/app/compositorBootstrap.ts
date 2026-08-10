@@ -15,12 +15,14 @@ export function bootstrapCompositor(): boolean {
   // Packaged builds re-launch themselves inside the compositor: the AppImage
   // via $APPIMAGE, the .deb via its own binary. When running from source
   // (dev/fast-deploy), process.execPath is the Electron binary and the app
-  // directory is process.cwd() — we pass it as an argument so Electron loads
-  // the right package.json/main entry.
+  // directory was passed as process.argv[1] — we preserve it so Electron loads
+  // the right package.json/main entry in the compositor relaunch.
   const relaunch = process.env.APPIMAGE ?? process.execPath
-  // When running from source (no APPIMAGE), pass the app directory so Electron
-  // loads our built out/main/main.js instead of the extracted asar.
-  const appArg = process.env.APPIMAGE ? '' : ` '${process.cwd()}'`
+  // When running from source (no APPIMAGE), pass the app directory that was
+  // given as the first argument so Electron loads our built out/main/main.js
+  // instead of the extracted asar. process.argv[1] is the app path when
+  // launched as `electron /path/to/app`.
+  const appArg = process.env.APPIMAGE ? '' : ` '${process.argv[1] ?? process.cwd()}'`
 
   const resources = process.resourcesPath
   if (!resources) return false
