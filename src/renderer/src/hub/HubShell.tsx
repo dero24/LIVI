@@ -248,14 +248,19 @@ export function HubShell() {
   }, [projectingPhone, calibrationApp])
 
   // [hub] §12.2: when projecting AND viewing AA (not landing), touches must
-  // pass through #content-root and its ancestors to reach the projection-root
-  // (z-0, fixed) below. We toggle a CSS class on <html> — the browser's CSS
-  // engine handles the rest at zero JavaScript cost. No MutationObserver
-  // (which caused severe lag by firing on every clock tick / re-render).
+  // pass through #content-root to reach the projection-root (z-0, fixed)
+  // below. We set pointer-events:none on #content-root directly — one-shot,
+  // no observer. The HubShell root also has pointer-events:none inline.
+  // The bar and interactive children override with pointer-events:auto.
   useEffect(() => {
     const passThrough = anyProjecting && !viewingLanding
+    const contentRoot = document.getElementById('content-root')
+    if (contentRoot) contentRoot.style.pointerEvents = passThrough ? 'none' : ''
     document.documentElement.classList.toggle('hub-touch-passthrough', passThrough)
-    return () => document.documentElement.classList.remove('hub-touch-passthrough')
+    return () => {
+      if (contentRoot) contentRoot.style.pointerEvents = ''
+      document.documentElement.classList.remove('hub-touch-passthrough')
+    }
   }, [anyProjecting, viewingLanding])
 
   return (

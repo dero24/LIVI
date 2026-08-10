@@ -51,11 +51,11 @@
             }
 
             /* [hub] §12.2: touch passthrough — when projecting AND viewing AA,
-               touches must pass through #content-root and its ancestors to reach
-               the projection-root (z-0) below. Toggled via CSS class on <html>
-               — zero JavaScript cost, no MutationObserver. */
-            html.hub-touch-passthrough #content-root,
-            html.hub-touch-passthrough #content-root > * {
+               touches must pass through #content-root to reach the projection-root
+               (z-0) below. Toggled via CSS class on <html> + inline style on
+               #content-root. The bar and interactive children override with
+               pointer-events:auto. */
+            html.hub-touch-passthrough #content-root {
               pointer-events: none;
             }
     </style>
