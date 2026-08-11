@@ -37,6 +37,7 @@ export interface LandingProps {
   phone: HubPhone
   onTileTap: (tile: LandingTile) => void
   onFullApps: () => void
+  onForgetCalibration?: () => void
 }
 
 // --- Calibration data persistence ---
@@ -74,9 +75,17 @@ export function getCalibration(phoneId: string, appKey: string): CalibData | nul
   return data[appKey] ?? null
 }
 
+export function clearCalibration(phoneId: string): void {
+  try {
+    localStorage.removeItem(`homehub.appPositions.${phoneId}`)
+  } catch {
+    // ignore
+  }
+}
+
 // --- Component ---
 
-export function Landing({ phone, onTileTap, onFullApps }: LandingProps) {
+export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: LandingProps) {
   const t = useHubTokens()
   const [calibData, setCalibData] = useState(() => loadCalibration(phone.phoneId))
   const personName = phone.person?.name ?? 'Unknown'
@@ -251,19 +260,34 @@ export function Landing({ phone, onTileTap, onFullApps }: LandingProps) {
         })}
       </Box>
 
-      {/* Full Apps Grid link */}
-      <Typography
-        onClick={onFullApps}
-        sx={{
-          fontSize: 'clamp(0.8rem, 2.5vmin, 1rem)',
-          color: '#58a6ff',
-          cursor: 'pointer',
-          textDecoration: 'none',
-          '&:hover': { textDecoration: 'underline' }
-        }}
-      >
-        Full Apps Grid →
-      </Typography>
+      {/* Bottom links: Full Apps Grid + Reset calibration */}
+      <Box sx={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
+        <Typography
+          onClick={onFullApps}
+          sx={{
+            fontSize: 'clamp(0.8rem, 2.5vmin, 1rem)',
+            color: '#58a6ff',
+            cursor: 'pointer',
+            textDecoration: 'none',
+            '&:hover': { textDecoration: 'underline' }
+          }}
+        >
+          Full Apps Grid →
+        </Typography>
+        {onForgetCalibration && Object.keys(calibData).length > 0 && (
+          <Typography
+            onClick={onForgetCalibration}
+            sx={{
+              fontSize: 'clamp(0.75rem, 2vmin, 0.9rem)',
+              color: t.textMuted,
+              cursor: 'pointer',
+              '&:hover': { color: t.text, textDecoration: 'underline' }
+            }}
+          >
+            Reset calibration
+          </Typography>
+        )}
+      </Box>
     </Box>
   )
 }

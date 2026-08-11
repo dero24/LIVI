@@ -19,6 +19,7 @@ import {
   LANDING_TILES,
   loadCalibration,
   saveCalibration,
+  clearCalibration,
   isCalibrated,
   getCalibration,
   type LandingTile,
@@ -197,6 +198,12 @@ export function HubShell() {
     setViewingLanding(false)
   }, [])
 
+  const handleForgetCalibration = useCallback(() => {
+    if (!projectingPhone) return
+    clearCalibration(projectingPhone.phoneId)
+    setViewingLanding(true) // re-render landing with uncalibrated tiles
+  }, [projectingPhone])
+
   // --- Calibration ---
   const handleCalibrationRecord = useCallback(
     (x: number, y: number, sequence: CalibData['sequence']) => {
@@ -352,6 +359,7 @@ export function HubShell() {
                 phone={projectingPhone}
                 onTileTap={handleTileTap}
                 onFullApps={handleFullApps}
+                onForgetCalibration={handleForgetCalibration}
               />
             )}
 
