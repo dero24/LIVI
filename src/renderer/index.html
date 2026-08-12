@@ -55,9 +55,32 @@
                through #content-root to reach the projection-root (z-0) below.
                The 'show-video' class is toggled by Projection.tsx when
                receivingVideo. The 'hub-aa-mode' class is toggled by HubShell
-               when viewingLanding becomes false (user entered AA). */
-            html.show-video.hub-aa-mode #content-root {
+               when viewingLanding becomes false (user entered AA).
+
+               Reliability note: we do NOT mutate #content-root's inline style
+               from JS — that was racey because hubd presence updates can
+               flicker `anyProjecting`, which toggled the inline style and let
+               #content-root (pointer-events: auto by default) briefly capture
+               touches meant for the video plane. Instead the class below is
+               the single source of truth, and it is driven by a latched
+               (hysteresis) projecting signal in HubShell so a one-frame
+               presence blip cannot disable passthrough. #projection-root and
+               #videoContainer re-enable pointer-events explicitly so the
+               cascade from #content-root:none does not swallow them, and only
+               elements marked .hub-interactive inside #hub-shell-root stay
+               tappable (the bar, health dot, home button, ring banner, gear). */
+            html.hub-aa-mode #content-root {
               pointer-events: none;
+            }
+            html.hub-aa-mode #projection-root,
+            html.hub-aa-mode #videoContainer {
+              pointer-events: auto;
+            }
+            html.hub-aa-mode #hub-shell-root {
+              pointer-events: none;
+            }
+            html.hub-aa-mode #hub-shell-root .hub-interactive {
+              pointer-events: auto;
             }
     </style>
   </head>

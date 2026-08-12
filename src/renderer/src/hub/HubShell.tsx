@@ -9,8 +9,9 @@
 //   - no hubd yet / unreachable   -> screensaver with a quiet "connecting" note
 //   - idle (no phones home)       -> screensaver
 //   - one or more phones          -> presence row + landing
-import { Box, Typography } from '@mui/material'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Box, IconButton, Typography } from '@mui/material'
+import SettingsIcon from '@mui/icons-material/Settings'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { FirstRunChip } from './components/FirstRunChip'
 import { HealthDot } from './components/HealthDot'
 import {
@@ -28,6 +29,7 @@ import {
 import { PresenceRow } from './components/PresenceRow'
 import { RingBanner } from './components/RingBanner'
 import { Screensaver } from './components/Screensaver'
+import { SettingsPanel } from './components/SettingsPanel'
 import type { HubPhone } from './types'
 import { useHubState } from './useHubState'
 import { useHubTokens } from './useHubTokens'
@@ -104,6 +106,21 @@ export function HubShell() {
   // (setVisible + show-video class), gated on receivingVideo from LIVI.
   const anyProjecting = phones.some((p) => p.presence.level === 'projecting')
 
+  // [hub] §12.2: latch `anyProjecting` with hysteresis so a one-frame presence
+  // blip from hubd (e.g. a status refresh that momentarily drops `projecting` to
+  // `docked`) cannot disable AA-mode touch passthrough. Immediate on, 2s
+  // delayed off — long enough to ride out a status-flush flicker, short enough
+  // that an actual undock reverts to the landing/screensaver promptly.
+  const [projectingStable, setProjectingStable] = useState(anyProjecting)
+  useEffect(() => {
+    if (anyProjecting) {
+      setProjectingStable(true)
+      return
+    }
+    const id = setTimeout(() => setProjectingStable(false), 2000)
+    return () => clearTimeout(id)
+  }, [anyProjecting])
+
   // [hub] §12.4/§12.6: landing page state. When a phone is projecting, show
   // the landing page (tiles) on top of the AA video. The user taps a tile to
   // enter AA. This is a local state within the projection surface — the
@@ -113,14 +130,53 @@ export function HubShell() {
   const [calibrationStep, setCalibrationStep] = useState(0)
   const [calibrationApp, setCalibrationApp] = useState<string | null>(null)
   const [navigating, setNavigating] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const projectingPhone = phones.find((p) => p.presence.level === 'projecting') ?? null
 
-  // Reset landing state when phone changes
+  // [hub] §12.4: tapping a phone bubble selects it (asks LIVI to make it the
+  // active session) AND, if it is the phone currently projecting, returns to
+  // the landing page so the user can pick an app. Tapping a non-projecting
+  // phone's bubble tries to select it (LIVI returns 409 if no session); we do
+  // not change the local view in that case.
+  const handleBubbleSelect = useCallback(
+    (phoneId: string) => {
+      const isProjecting = phones.find((p) => p.phoneId === phoneId)?.presence.level === 'projecting'
+      if (isProjecting) setViewingLanding(true)
+      select(phoneId)
+    },
+    [phones, select]
+  )
+
+  // [hub] §12.4: reset landing/calibration state when the projecting phone
+  // ACTUALLY changes. The previous version keyed on `projectingPhone?.phoneId`
+  // directly, which flickers: a hubd presence refresh can briefly drop
+  // `presence.level` from `projecting` to `docked`, making projectingPhone null
+  // for one render, then back. That fired this effect twice and cancelled a
+  // calibration mid-flow (re-showing the Landing over the AA dashboard). Now we
+  // only reset when a DIFFERENT phone starts projecting (tracked via a ref that
+  // ignores null blips), and separately reset when projection ends entirely
+  // (driven by the latched `projectingStable`).
+  const prevProjectingPhoneId = useRef<string | undefined>(undefined)
   useEffect(() => {
-    setViewingLanding(true)
-    setCalibrating(false)
-    setCalibrationStep(0)
+    const id = projectingPhone?.phoneId
+    if (id && id !== prevProjectingPhoneId.current) {
+      setViewingLanding(true)
+      setCalibrating(false)
+      setCalibrationStep(0)
+      prevProjectingPhoneId.current = id
+    }
+    // When id is undefined (a presence blip or an undock), do NOT clear the
+    // ref — the same phone returning must not reset state. Full reset on a
+    // real undock is handled by the projectingStable effect below.
   }, [projectingPhone?.phoneId])
+
+  useEffect(() => {
+    if (!projectingStable) {
+      setViewingLanding(true)
+      setCalibrating(false)
+      setCalibrationStep(0)
+    }
+  }, [projectingStable])
 
   // --- App navigation (invisible, with fade) ---
   const navigateToApp = useCallback(
@@ -176,11 +232,13 @@ export function HubShell() {
         setCalibrationApp(tile.key)
         setCalibrationStep(1)
         setCalibrating(true)
-        // Show AA dashboard for calibration
+        // Show the AA dashboard so the user can tap where the app lives. The
+        // first 'home' can race with AA session bring-up and be dropped, so
+        // retry once after a beat. The shell is transparent during calibration
+        // (see root backgroundColor) and the Landing is hidden (`!calibrating`
+        // in its render gate), so the dashboard shows through the overlay.
         window.projection.ipc.sendCommand('home')
-        setTimeout(() => {
-          // The calibration overlay will handle the rest
-        }, 800)
+        setTimeout(() => window.projection.ipc.sendCommand('home'), 600)
         return
       }
       // Navigate to the app invisibly, then fade to AA
@@ -254,25 +312,26 @@ export function HubShell() {
     }
   }, [projectingPhone, calibrationApp])
 
-  // [hub] §12.2: when viewing AA (not landing), toggle 'hub-aa-mode' class
-  // on <html>. Combined with 'show-video' (toggled by Projection.tsx), the
-  // CSS rule in index.html sets pointer-events:none on #content-root so
-  // touches reach the projection-root (z-0) below. Also set inline style
-  // as a backup for browsers that don't support the class combination.
+  // [hub] §12.2: when viewing AA (not landing), toggle 'hub-aa-mode' on <html>.
+  // The CSS in index.html is the single source of truth for the passthrough
+  // (#content-root:none, #projection-root/#videoContainer:auto,
+  // #hub-shell-root:none with .hub-interactive children re-enabled). We do NOT
+  // mutate #content-root's inline style — that was racey: hubd presence
+  // flickers toggled it and let #content-root briefly capture touches. The
+  // latched `projectingStable` (above) drives this so a one-frame blip cannot
+  // drop passthrough mid-touch.
+  const aaMode = projectingStable && !viewingLanding
   useEffect(() => {
-    const aaMode = anyProjecting && !viewingLanding
     document.documentElement.classList.toggle('hub-aa-mode', aaMode)
-    const contentRoot = document.getElementById('content-root')
-    if (contentRoot) contentRoot.style.pointerEvents = aaMode ? 'none' : ''
     return () => {
       document.documentElement.classList.remove('hub-aa-mode')
-      if (contentRoot) contentRoot.style.pointerEvents = ''
     }
-  }, [anyProjecting, viewingLanding])
+  }, [aaMode])
 
   return (
     <Box
       data-testid="hub-shell"
+      id="hub-shell-root"
       sx={{
         position: 'relative',
         width: '100%',
@@ -283,25 +342,43 @@ export function HubShell() {
         // During calibration, the AA dashboard must be visible through the
         // semi-transparent overlay. During landing, opaque covers the AA video.
         // During AA viewing, transparent so touches pass through to projection-root.
-        backgroundColor: anyProjecting && (!viewingLanding || calibrating) ? 'transparent' : t.bg,
+        // Uses the latched `projectingStable` so a presence blip cannot flash
+        // an opaque background over the video mid-touch.
+        backgroundColor: projectingStable && (!viewingLanding || calibrating) ? 'transparent' : t.bg,
         color: t.text,
-        overflow: 'hidden',
-        // [hub] §12.2: transparent to events when projecting AND (viewing AA
-        // OR calibrating) so touches pass through to the projection-root.
-        // When viewing the landing page, keep events so tiles are interactive.
-        pointerEvents: anyProjecting && !viewingLanding ? 'none' : 'auto'
+        overflow: 'hidden'
+        // pointer-events is intentionally NOT set here: the CSS rule
+        // `html.hub-aa-mode #hub-shell-root { pointer-events: none }` is the
+        // single source of truth for AA-mode passthrough, and `.hub-interactive`
+        // children re-enable it. Setting it inline would override the CSS
+        // (inline > rule) and reintroduce the flicker bug.
       }}
     >
-      {/* Health dot, always visible, top-right, out of the way. */}
+      {/* [hub] Top-right cluster: settings gear + health dot. Both stay
+          tappable in AA mode via .hub-interactive. The gear opens the
+          settings drawer (§12.5). */}
       <Box
+        className="hub-interactive"
         sx={{
           position: 'absolute',
           top: '0.6rem',
           right: '0.6rem',
-          zIndex: 2,
-          pointerEvents: 'auto'
+          zIndex: 3,
+          pointerEvents: 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.4rem'
         }}
       >
+        <IconButton
+          aria-label="Settings"
+          data-testid="hub-settings-gear"
+          onClick={() => setSettingsOpen(true)}
+          size="small"
+          sx={{ color: t.text, opacity: 0.85, '&:hover': { opacity: 1, backgroundColor: 'rgba(255,255,255,0.08)' } }}
+        >
+          <SettingsIcon fontSize="small" />
+        </IconButton>
         <HealthDot healthy={healthy} stale={stale} />
       </Box>
 
@@ -317,6 +394,7 @@ export function HubShell() {
               projectionViewAreaTop so the phone lays out below it. */}
           <Box
             ref={barRef}
+            className="hub-interactive"
             sx={{
               pointerEvents: 'auto',
               backgroundColor: t.surface,
@@ -333,7 +411,14 @@ export function HubShell() {
             {/* Clock + date row */}
             <ClockRow />
             {/* Presence bubbles */}
-            <PresenceRow phones={phones} onSelect={select} />
+            <PresenceRow phones={phones} onSelect={handleBubbleSelect} />
+            {/* [hub] §12.6: media transport — prev / play-pause / next.
+                Wired to window.projection.ipc.sendCommand, which maps through
+                CommandMapping → BUTTON_KEY.MEDIA_* in AaSession's SendCommand
+                handler (src/main/services/projection/driver/aa/AaSession.ts).
+                Only shown while a phone is projecting (otherwise no AA session
+                to receive the button press). */}
+            {anyProjecting && <MediaControls />}
           </Box>
           <Box
             sx={{
@@ -344,10 +429,11 @@ export function HubShell() {
               justifyContent: 'center',
               gap: '0.75rem',
               padding: '1rem',
-              textAlign: 'center',
-              // [hub] §12.2: transparent hole — let the video plane show through
-              // and let touch events pass to the projection layer below.
-              pointerEvents: anyProjecting && !viewingLanding ? 'none' : 'auto'
+              textAlign: 'center'
+              // [hub] §12.2: pointer-events handled by the `hub-aa-mode` CSS
+              // (none on #hub-shell-root, auto on .hub-interactive). This Box
+              // is not interactive in AA mode, so it inherits `none` and lets
+              // touches fall through to #projection-root below.
             }}
           >
             {/* [hub] §12.4: landing page overlay when projecting. Shows tiles
@@ -405,7 +491,7 @@ export function HubShell() {
       {/* [hub] G2 / §6.2: the first-run naming + enrollment chip, shown once
           per unnamed/companion-less phone. Naming is an invitation, not a gate. */}
       {phones.length > 0 && (
-        <Box sx={{ pointerEvents: 'auto' }}>
+        <Box className="hub-interactive" sx={{ pointerEvents: 'auto' }}>
           <FirstRunChip
             phone={phones[0]}
             onRename={(phoneId, name) => intent({ type: 'phone.rename', phoneId, name })}
@@ -419,30 +505,32 @@ export function HubShell() {
         </Box>
       )}
 
-      {/* [hub] Home button — floating, top-left of the AA area. Returns from
-          AA to the landing page. Only visible when viewing AA (not landing). */}
+      {/* [hub] Home button — small floating, BOTTOM-left of the AA area so it
+          never overlaps the clock/presence bar at the top. Returns from AA to
+          the landing page. Only visible when viewing AA (not landing). */}
       {anyProjecting && !viewingLanding && !calibrating && (
         <Box
+          className="hub-interactive"
           onClick={() => setViewingLanding(true)}
           sx={{
             position: 'absolute',
-            top: 'clamp(0.5rem, 1.5vh, 1rem)',
-            left: 'clamp(0.5rem, 1.5vw, 1rem)',
+            bottom: 'clamp(0.75rem, 2vh, 1.5rem)',
+            left: 'clamp(0.75rem, 2vw, 1.5rem)',
             zIndex: 10,
             pointerEvents: 'auto',
-            width: 'clamp(2.5rem, 8vmin, 3.5rem)',
-            height: 'clamp(2.5rem, 8vmin, 3.5rem)',
+            width: 'clamp(2.25rem, 7vmin, 3rem)',
+            height: 'clamp(2.25rem, 7vmin, 3rem)',
             borderRadius: '50%',
-            backgroundColor: 'rgba(0,0,0,0.5)',
+            backgroundColor: 'rgba(0,0,0,0.55)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
             color: '#fff',
-            fontSize: 'clamp(1.2rem, 4vmin, 1.8rem)',
+            fontSize: 'clamp(1.1rem, 3.5vmin, 1.6rem)',
             transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
             '&:hover': {
-              backgroundColor: 'rgba(0,0,0,0.7)',
+              backgroundColor: 'rgba(0,0,0,0.75)',
               transform: 'scale(1.05)'
             },
             '&:active': {
@@ -459,7 +547,7 @@ export function HubShell() {
           screen (§12.2/§12.6 state E). It preempts the screensaver, the landing
           page and projection; the previous surface is restored when it ends. */}
       {ring && (
-        <Box sx={{ pointerEvents: 'auto' }}>
+        <Box className="hub-interactive" sx={{ pointerEvents: 'auto' }}>
           <RingBanner
             ring={ring}
             knownPhoneCount={phones.length}
@@ -483,6 +571,16 @@ export function HubShell() {
           onSkip={handleCalibrationSkip}
         />
       )}
+
+      {/* [hub] §12.5: settings drawer (gear in the top-right cluster). */}
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        intent={intent}
+        projectingPhone={projectingPhone}
+        phones={phones}
+        onResetCalibration={handleForgetCalibration}
+      />
     </Box>
   )
 }
@@ -526,6 +624,59 @@ function ClockRow() {
       >
         {date}
       </Typography>
+    </Box>
+  )
+}
+
+// [hub] §12.6: media transport controls for the bar. Prev / play-pause / next.
+// Each button calls window.projection.ipc.sendCommand, which the main process
+// forwards as a SendCommand to the active AA driver. AaSession maps
+// CommandMapping.play/pause/playPause/next/prev → BUTTON_KEY.MEDIA_* and sends
+// a press+release (src/main/services/projection/driver/aa/AaSession.ts:574-578).
+// Stateless on purpose — AA owns the real playback state; we only send intents.
+function MediaControls() {
+  const send = (key: string) => () => {
+    window.projection.ipc.sendCommand(key)
+  }
+  const btn = (label: string, key: string): ReactNode => (
+    <Box
+      role="button"
+      aria-label={label}
+      data-testid={`hub-media-${key}`}
+      onClick={send(key)}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 'clamp(2.25rem, 7vmin, 3rem)',
+        height: 'clamp(2.25rem, 7vmin, 3rem)',
+        borderRadius: '50%',
+        cursor: 'pointer',
+        fontSize: 'clamp(1.1rem, 3.5vmin, 1.6rem)',
+        color: 'inherit',
+        transition: 'background-color 160ms ease, transform 120ms ease',
+        '&:hover': { backgroundColor: 'rgba(255,255,255,0.08)' },
+        '&:active': { transform: 'scale(0.92)', backgroundColor: 'rgba(255,255,255,0.12)' }
+      }}
+    >
+      {label}
+    </Box>
+  )
+  return (
+    <Box
+      data-testid="hub-media-controls"
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 'clamp(0.5rem, 2vw, 1rem)',
+        // keep the row from stealing vertical space when not needed
+        marginTop: 'auto'
+      }}
+    >
+      {btn('\u23EE', 'previous')}
+      {btn('\u23EF', 'playPause')}
+      {btn('\u23ED', 'next')}
     </Box>
   )
 }

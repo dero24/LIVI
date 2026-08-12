@@ -260,20 +260,10 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
         })}
       </Box>
 
-      {/* Bottom links: Full Apps Grid + Reset calibration */}
+      {/* Bottom link: Reset calibration. (The "Full Apps Grid →" text link was
+          removed — the Apps tile in the grid above already opens the AA app
+          grid, so the link was a duplicate target.) */}
       <Box sx={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
-        <Typography
-          onClick={onFullApps}
-          sx={{
-            fontSize: 'clamp(0.8rem, 2.5vmin, 1rem)',
-            color: '#58a6ff',
-            cursor: 'pointer',
-            textDecoration: 'none',
-            '&:hover': { textDecoration: 'underline' }
-          }}
-        >
-          Full Apps Grid →
-        </Typography>
         {onForgetCalibration && Object.keys(calibData).length > 0 && (
           <Typography
             onClick={onForgetCalibration}
@@ -414,7 +404,10 @@ export function CalibrationOverlay({
         right: 0,
         bottom: 0,
         zIndex: 100002,
-        backgroundColor: 'rgba(0,0,0,0.5)',
+        // [hub] light enough that the AA dashboard is clearly visible through
+        // it so the user can see the app they are calibrating. The instruction
+        // panel below is opaque, so it stays legible.
+        backgroundColor: 'rgba(0,0,0,0.35)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
