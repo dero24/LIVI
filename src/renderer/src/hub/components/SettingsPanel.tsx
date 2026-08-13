@@ -16,6 +16,7 @@ import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 import { useLiviStore } from '@store/store'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
+import { isCalibrated, LANDING_TILES } from './Landing'
 
 export interface SettingsPanelProps {
   open: boolean
@@ -24,6 +25,7 @@ export interface SettingsPanelProps {
   projectingPhone: HubPhone | null
   phones: HubPhone[]
   onResetCalibration: () => void
+  onRecalibrateApp?: (phoneId: string, appKey: string) => void
 }
 
 interface NetStatus {
@@ -85,7 +87,8 @@ export function SettingsPanel({
   intent,
   projectingPhone,
   phones,
-  onResetCalibration
+  onResetCalibration,
+  onRecalibrateApp
 }: SettingsPanelProps) {
   const t = useHubTokens()
   const settings = useLiviStore((s) => s.settings)
@@ -187,52 +190,108 @@ export function SettingsPanel({
         <Typography sx={{ fontSize: '0.8rem', color: '#58a6ff', marginBottom: '0.5rem' }}>{msg}</Typography>
       )}
 
-      <SectionTitle>Phone</SectionTitle>
-      {projectingPhone ? (
-        <Row
-          icon={<DeleteIcon />}
-          title={`Forget ${projectingPhone.person?.name ?? 'phone'}`}
-          subtitle="Unpairs Bluetooth and removes the phone from the hub. Re-dock to re-enrol."
-          danger
-          action={
-            <Button
-              size="small"
-              color="error"
-              variant="outlined"
-              disabled={busy === 'Forget'}
-              onClick={() => run('Forget', () => intent({ type: 'phone.forget', phoneId: projectingPhone.phoneId }))}
-            >
-              Forget
-            </Button>
-          }
-        />
-      ) : (
+      <SectionTitle>Phones</SectionTitle>
+      {phones.length === 0 ? (
         <Typography sx={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)', padding: '0.5rem 0' }}>
-          No phone is projecting. Dock a phone to manage it.
+          No phones known. Dock a phone to begin.
         </Typography>
-      )}
-      {phones.length > 1 && (
-        <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)' }}>
-          {phones.length} phones known · forget is available for the projecting phone above.
-        </Typography>
+      ) : (
+        phones.map((p) => (
+          <Box key={p.phoneId} sx={{ marginBottom: '0.5rem' }}>
+            <Row
+              icon={
+                <Box sx={{
+                  width: '1.5rem', height: '1.5rem', borderRadius: '50%',
+                  backgroundColor: p.person?.colour ?? '#4F7CAC',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: '#fff', fontSize: '0.7rem', fontWeight: 600
+                }}>
+                  {(p.person?.name ?? 'P').charAt(0).toUpperCase()}
+                </Box>
+              }
+              title={p.person?.name ?? 'Unknown'}
+              subtitle={`${p.presence.level}${p.livi?.batteryLevel != null ? ` · ${p.livi.batteryLevel}%` : ''}`}
+              action={
+                p.presence.level === 'projecting' ? (
+                  <Button
+                    size="small"
+                    color="error"
+                    variant="outlined"
+                    disabled={busy === 'Forget'}
+                    onClick={() => run('Forget', () => intent({ type: 'phone.forget', phoneId: p.phoneId }))}
+                  >
+                    Forget
+                  </Button>
+                ) : (
+                  <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)' }}>
+                    {p.presence.level === 'absent' ? 'Away' : 'Dock to manage'}
+                  </Typography>
+                )
+              }
+            />
+          </Box>
+        ))
       )}
 
       <SectionTitle>Calibration</SectionTitle>
-      <Row
-        icon={<TuneIcon />}
-        title="Reset calibration"
-        subtitle="Clears recorded app positions for the projecting phone. Tiles will prompt for re-calibration."
-        action={
-          <Button
-            size="small"
-            variant="outlined"
-            disabled={!projectingPhone || busy === 'Reset'}
-            onClick={() => run('Reset', onResetCalibration)}
-          >
-            Reset
-          </Button>
-        }
-      />
+      {phones.filter((p) => p.presence.rank >= 2).length === 0 ? (
+        <Typography sx={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)', padding: '0.5rem 0' }}>
+          No phones present. Dock a phone to calibrate.
+        </Typography>
+      ) : (
+        <Box sx={{ marginBottom: '0.5rem' }}>
+          {phones.filter((p) => p.presence.rank >= 2).map((p) => {
+            const isProjecting = p.presence.level === 'projecting'
+            return (
+              <Box key={p.phoneId} sx={{ marginBottom: '0.75rem' }}>
+                <Typography sx={{ fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+                  {p.person?.name ?? 'Unknown'}
+                  {!isProjecting && <Box component="span" sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', marginLeft: '0.5rem' }}>(dock & project to recalibrate)</Box>}
+                </Typography>
+                {LANDING_TILES.filter((t) => t.calibratable).map((tile) => {
+                  const calibrated = isCalibrated(p.phoneId, tile.key)
+                  return (
+                    <Box key={tile.key} sx={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0' }}>
+                      <Box sx={{ fontSize: '1.1rem' }}>{tile.icon}</Box>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography sx={{ fontSize: '0.8rem' }}>{tile.label}</Typography>
+                        <Typography sx={{ fontSize: '0.7rem', color: calibrated ? '#58a6ff' : 'rgba(255,255,255,0.4)' }}>
+                          {calibrated ? 'Calibrated' : 'Not calibrated'}
+                        </Typography>
+                      </Box>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        disabled={!isProjecting}
+                        onClick={() => onRecalibrateApp?.(p.phoneId, tile.key)}
+                      >
+                        Recalibrate
+                      </Button>
+                    </Box>
+                  )
+                })}
+              </Box>
+            )
+          })}
+          {projectingPhone && (
+            <Row
+              icon={<TuneIcon />}
+              title="Reset all calibration"
+              subtitle={`Clears all recorded app positions for ${projectingPhone.person?.name ?? 'the projecting phone'}.`}
+              action={
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy === 'Reset'}
+                  onClick={() => run('Reset', onResetCalibration)}
+                >
+                  Reset
+                </Button>
+              }
+            />
+          )}
+        </Box>
+      )}
 
       <SectionTitle>System</SectionTitle>
       <Row

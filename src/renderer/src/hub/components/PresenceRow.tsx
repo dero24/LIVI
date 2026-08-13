@@ -3,7 +3,7 @@
 // height and publishes it as `--hub-view-area-top` (and via onHeight), so the
 // projected phone can lay its UI out below the bar at ANY panel size, with no
 // hard-coded pixels.
-import { Box } from '@mui/material'
+import { Box, type SxProps } from '@mui/material'
 import { useEffect, useRef } from 'react'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
@@ -13,9 +13,11 @@ export interface PresenceRowProps {
   phones: HubPhone[]
   onSelect?: (phoneId: string) => void
   onHeight?: (px: number) => void
+  size?: 'default' | 'large'
+  sx?: SxProps
 }
 
-export function PresenceRow({ phones, onSelect, onHeight }: PresenceRowProps) {
+export function PresenceRow({ phones, onSelect, onHeight, size = 'default', sx }: PresenceRowProps) {
   const t = useHubTokens()
   const ref = useRef<HTMLDivElement | null>(null)
 
@@ -45,14 +47,15 @@ export function PresenceRow({ phones, onSelect, onHeight }: PresenceRowProps) {
         flexWrap: 'wrap',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 'clamp(0.5rem, 2vw, 1.5rem)',
-        padding: 'clamp(0.5rem, 1.5vh, 1rem)',
+        gap: size === 'large' ? 'clamp(1rem, 4vw, 3rem)' : 'clamp(0.5rem, 2vw, 1.5rem)',
+        padding: size === 'large' ? 'clamp(1rem, 3vh, 2rem)' : 'clamp(0.5rem, 1.5vh, 1rem)',
         backgroundColor: t.surface,
-        borderBottom: `1px solid ${t.border}`
+        borderBottom: `1px solid ${t.border}`,
+        ...(sx as object)
       }}
     >
       {phones.map((p) => (
-        <PhoneBubble key={p.phoneId} phone={p} onSelect={onSelect} />
+        <PhoneBubble key={p.phoneId} phone={p} onSelect={onSelect} size={size} />
       ))}
     </Box>
   )

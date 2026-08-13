@@ -161,7 +161,7 @@ describe('HubShell', () => {
     expect(intent).toHaveBeenCalledWith({ type: 'ring.bringToHub', phoneId: 'P1' })
   })
 
-  it('makes the shell a transparent hole when a phone is projecting (§12.2)', async () => {
+  it('shows screensaver by default when a phone is projecting (Phase 1.10)', async () => {
     installHub(
       mkState({
         phones: [
@@ -179,13 +179,97 @@ describe('HubShell', () => {
     renderShell()
     await waitFor(() => expect(screen.getByTestId('hub-presence-row')).toBeInTheDocument())
     const shell = screen.getByTestId('hub-shell')
-    // When projecting with the landing page visible (default), the background
-    // is opaque (the landing page covers the AA video). The greeting text is
-    // NOT rendered — the landing page tiles occupy that area.
+    // Phase 1.10: default viewMode is 'screensaver' — opaque background,
+    // screensaver visible with bubbles, landing page NOT shown.
     expect(shell).not.toHaveStyle({ backgroundColor: 'rgba(0, 0, 0, 0)' })
-    expect(screen.queryByText(/good (morning|afternoon|evening)/i)).not.toBeInTheDocument()
-    // The landing page should be visible
-    expect(screen.getByTestId('hub-landing')).toBeInTheDocument()
+    expect(screen.getByTestId('hub-screensaver')).toBeInTheDocument()
+    expect(screen.queryByTestId('hub-landing')).not.toBeInTheDocument()
+  })
+
+  it('tapping a projecting phone bubble navigates to the landing page', async () => {
+    installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Pixel', colour: '#4F7CAC' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'projecting', rank: 4 },
+            livi: { batteryLevel: 82 }
+          }
+        ]
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-phone-bubble')).toBeInTheDocument())
+    // Default is screensaver — no landing page
+    expect(screen.queryByTestId('hub-landing')).not.toBeInTheDocument()
+    // Tap the bubble → landing page appears
+    fireEvent.click(screen.getByTestId('hub-phone-bubble'))
+    await waitFor(() => expect(screen.getByTestId('hub-landing')).toBeInTheDocument())
+  })
+
+  it('back button cycles from landing to screensaver', async () => {
+    installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Pixel', colour: '#4F7CAC' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'projecting', rank: 4 },
+            livi: { batteryLevel: 82 }
+          }
+        ]
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-phone-bubble')).toBeInTheDocument())
+    // Tap bubble → landing
+    fireEvent.click(screen.getByTestId('hub-phone-bubble'))
+    await waitFor(() => expect(screen.getByTestId('hub-landing')).toBeInTheDocument())
+    // Back button → screensaver
+    fireEvent.click(screen.getByTestId('hub-back-button'))
+    await waitFor(() => expect(screen.queryByTestId('hub-landing')).not.toBeInTheDocument())
+    expect(screen.getByTestId('hub-screensaver')).toBeInTheDocument()
+  })
+
+  it('shows the ring banner on top of the screensaver', async () => {
+    const { intent } = installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Sarah' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'docked', rank: 3 }
+          }
+        ],
+        ring: {
+          phoneId: 'P1',
+          person: 'Sarah',
+          caller: { name: 'Mom', number: '+15551234', photo: null },
+          state: 'incoming',
+          tier: 1,
+          tone: true,
+          startedAt: Date.now(),
+          canAnswerOnHub: true,
+          answerVia: 'projection',
+          canBringToHub: false,
+          queued: []
+        }
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-ring-banner')).toBeInTheDocument())
+    // Ring banner is on top of the screensaver
+    expect(screen.getByTestId('hub-screensaver')).toBeInTheDocument()
+    expect(screen.getByText('Mom')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('hub-ring-answer'))
+    expect(intent).toHaveBeenCalledWith({ type: 'ring.answer', phoneId: 'P1' })
   })
 
   it('keeps the opaque background and greeting when phones are docked but not projecting', async () => {

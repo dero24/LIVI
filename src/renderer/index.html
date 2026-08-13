@@ -55,7 +55,7 @@
                through #content-root to reach the projection-root (z-0) below.
                The 'show-video' class is toggled by Projection.tsx when
                receivingVideo. The 'hub-aa-mode' class is toggled by HubShell
-               when viewingLanding becomes false (user entered AA).
+               when viewMode becomes 'aa' (user entered AA).
 
                Reliability note: we do NOT mutate #content-root's inline style
                from JS — that was racey because hubd presence updates can

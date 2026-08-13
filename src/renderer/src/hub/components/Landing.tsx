@@ -4,8 +4,8 @@
 //
 // The landing page is a z-layer overlay WITHIN the projection surface (not a
 // separate SurfaceManager surface — projection is priority 70, landing is 30,
-// so projection preempts). HubShell manages local viewingLanding vs viewingAA
-// state. The AA video runs underneath; the landing page fades out to reveal it.
+// so projection preempts). HubShell manages local viewMode state
+// (screensaver/landing/aa). The AA video runs underneath; the landing page fades out to reveal it.
 //
 // Calibration: when a user taps an uncalibrated tile, a calibration flow
 // records the touch position of each app on the AA dashboard. The recorded
