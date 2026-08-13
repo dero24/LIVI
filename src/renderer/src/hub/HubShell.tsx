@@ -395,7 +395,7 @@ export function HubShell() {
         // and screensaver, opaque covers the AA video.
         // Uses the latched `projectingStable` so a presence blip cannot flash
         // an opaque background over the video mid-touch.
-        backgroundColor: projectingStable && (viewMode === 'aa' || calibrating) ? 'transparent' : t.bg,
+        backgroundColor: projectingStable && viewMode !== 'screensaver' ? 'transparent' : t.bg,
         color: t.text,
         overflow: 'hidden'
         // pointer-events is intentionally NOT set here: the CSS rule
@@ -416,7 +416,7 @@ export function HubShell() {
           position: 'absolute',
           top: '0.6rem',
           right: '0.6rem',
-          zIndex: 3,
+          zIndex: 10,
           pointerEvents: 'auto',
           display: 'flex',
           alignItems: 'center',
@@ -460,8 +460,10 @@ export function HubShell() {
         />
       )}
 
-      {/* [hub] Phase 1.10: Landing / AA mode — bar + content */}
-      {viewMode !== 'screensaver' && (
+      {/* [hub] Phase 1.10: Landing / AA mode — bar + content.
+          Bar hidden during calibration so the full AA dashboard is visible
+          through the CalibrationOverlay. */}
+      {viewMode !== 'screensaver' && !calibrating && (
         <>
           {/* [hub] §12.6: the bar is a view-area inset. It contains:
               - Clock + date (top line, large)

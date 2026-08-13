@@ -1,19 +1,17 @@
 // [hub] §12.5: the settings panel — a right-anchored drawer opened from the
 // gear in the bar. It is the human surface for the intents hubd already owns
-// (§7.5): forget a phone, reset calibration, restart LIVI, change display
-// dimensions, and inspect network/service health. Per the plan it is a node in
-// LIVI's own settings surface — here a lightweight MUI Drawer rather than the
-// full schema tree, since the hub only owns a handful of keys (SETTINGS_ALLOWLIST
-// in hubd/hubd/intents.py). Every write goes through `window.hub.intent` so
-// hubd remains the single mutation path (D7).
+// (§7.5): forget a phone, reset calibration, restart LIVI, and inspect
+// network/service health. Per the plan it is a node in LIVI's own settings
+// surface — here a lightweight MUI Drawer rather than the full schema tree,
+// since the hub only owns a handful of keys (SETTINGS_ALLOWLIST in
+// hubd/hubd/intents.py). Every write goes through `window.hub.intent` so hubd
+// remains the single mutation path (D7).
 import { Box, Button, Divider, Drawer, IconButton, Typography } from '@mui/material'
 import SettingsIcon from '@mui/icons-material/Settings'
 import CloseIcon from '@mui/icons-material/Close'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
-import DeleteIcon from '@mui/icons-material/Delete'
 import TuneIcon from '@mui/icons-material/Tune'
-import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
-import { useLiviStore } from '@store/store'
+import { type ReactNode, useEffect, useState } from 'react'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
 import { isCalibrated, LANDING_TILES } from './Landing'
@@ -33,7 +31,6 @@ interface NetStatus {
   gateway?: string | null
   'livi-kiosk'?: string
   hubd?: string
-  'wlan0-watchdog'?: string
 }
 
 function Row({
@@ -91,24 +88,10 @@ export function SettingsPanel({
   onRecalibrateApp
 }: SettingsPanelProps) {
   const t = useHubTokens()
-  const settings = useLiviStore((s) => s.settings)
   const [net, setNet] = useState<NetStatus | null>(null)
   const [netErr, setNetErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
-
-  // Display settings local edit state (initialized from the live config).
-  const [pw, setPw] = useState('')
-  const [ph, setPh] = useState('')
-  const [pdpi, setPdpi] = useState('')
-
-  useEffect(() => {
-    if (settings) {
-      setPw(String(settings.projectionWidth ?? ''))
-      setPh(String(settings.projectionHeight ?? ''))
-      setPdpi(String(settings.projectionDpi ?? ''))
-    }
-  }, [settings, open])
 
   // Fetch network/service status from the hearth-recovery server (read-only
   // /status needs no token). It runs on the Pi at localhost:8125.
@@ -137,25 +120,6 @@ export function SettingsPanel({
     } finally {
       setBusy(null)
     }
-  }
-
-  const applyDisplay = () => {
-    const next: Record<string, number> = {}
-    const w = Number(pw)
-    const h = Number(ph)
-    const dpi = Number(pdpi)
-    if (w > 0) next.projectionWidth = w
-    if (h > 0) next.projectionHeight = h
-    if (dpi >= 0) next.projectionDpi = dpi
-    // Keep the main screen in sync with the projection tier (portrait panel:
-    // they match). Allows a panel swap to be a settings change (§12.1).
-    if (w > 0) next.mainScreenWidth = w
-    if (h > 0) next.mainScreenHeight = h
-    if (Object.keys(next).length === 0) {
-      setMsg('No display values to apply')
-      return
-    }
-    void run('Display', () => intent({ type: 'settings.set', settings: next }))
   }
 
   return (
@@ -310,44 +274,6 @@ export function SettingsPanel({
         }
       />
 
-      <SectionTitle>Display</SectionTitle>
-      <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)', marginBottom: '0.5rem' }}>
-        Projection tier dimensions + DPI. Must match the physical panel (e.g. 600×1024 portrait, 120 DPI).
-        A change restarts the AA session at the new resolution.
-      </Typography>
-      <Box sx={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>
-          Width
-          <input
-            type="number"
-            value={pw}
-            onChange={(e) => setPw(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>
-          Height
-          <input
-            type="number"
-            value={ph}
-            onChange={(e) => setPh(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>
-          DPI
-          <input
-            type="number"
-            value={pdpi}
-            onChange={(e) => setPdpi(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-      </Box>
-      <Button size="small" variant="contained" onClick={applyDisplay} disabled={busy === 'Display'}>
-        Apply display settings
-      </Button>
-
       <SectionTitle>Network & services</SectionTitle>
       {netErr && (
         <Typography sx={{ fontSize: '0.75rem', color: '#ff6b6b' }}>
@@ -360,7 +286,6 @@ export function SettingsPanel({
           <Box>gateway: <b>{net.gateway ?? '—'}</b></Box>
           <Box>livi-kiosk: <b>{net['livi-kiosk'] ?? '?'}</b></Box>
           <Box>hubd: <b>{net.hubd ?? '?'}</b></Box>
-          <Box>watchdog: <b>{net['wlan0-watchdog'] ?? '?'}</b></Box>
         </Box>
       )}
       {!net && !netErr && (
@@ -371,15 +296,4 @@ export function SettingsPanel({
       </Typography>
     </Drawer>
   )
-}
-
-const inputStyle: CSSProperties = {
-  width: '5rem',
-  backgroundColor: 'rgba(255,255,255,0.06)',
-  border: '1px solid rgba(255,255,255,0.15)',
-  color: '#fff',
-  borderRadius: '6px',
-  padding: '0.35rem 0.5rem',
-  fontSize: '0.9rem',
-  marginTop: '0.2rem'
 }

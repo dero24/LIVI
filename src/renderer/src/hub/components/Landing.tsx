@@ -102,22 +102,19 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
     <Box
       data-testid="hub-landing"
       sx={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'flex-start',
         gap: 'clamp(0.75rem, 2vh, 1.5rem)',
         padding: 'clamp(0.75rem, 2vw, 1.5rem)',
-        backgroundColor: t.bg,
-        zIndex: 5,
+        backgroundColor: 'rgba(13,17,23,0.82)',
+        backdropFilter: 'blur(8px)',
         transition: 'opacity 400ms cubic-bezier(0.4, 0, 0.2, 1)',
         pointerEvents: 'auto',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        width: '100%',
+        height: '100%'
       }}
     >
       {/* [hub] §12.6: person-colored header — makes it instantly clear whose

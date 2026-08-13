@@ -272,6 +272,32 @@ describe('HubShell', () => {
     expect(intent).toHaveBeenCalledWith({ type: 'ring.answer', phoneId: 'P1' })
   })
 
+  it('gear icon is visible in all view modes (screensaver and landing)', async () => {
+    installHub(
+      mkState({
+        phones: [
+          {
+            phoneId: 'P1',
+            person: { name: 'Pixel', colour: '#4F7CAC' },
+            platform: 'android',
+            protocol: 'androidauto',
+            presence: { level: 'projecting', rank: 4 },
+            livi: { batteryLevel: 82 }
+          }
+        ]
+      })
+    )
+    renderShell()
+    await waitFor(() => expect(screen.getByTestId('hub-phone-bubble')).toBeInTheDocument())
+    // Gear visible on screensaver
+    expect(screen.getByTestId('hub-settings-gear')).toBeInTheDocument()
+    // Tap bubble → landing page
+    fireEvent.click(screen.getByTestId('hub-phone-bubble'))
+    await waitFor(() => expect(screen.getByTestId('hub-landing')).toBeInTheDocument())
+    // Gear still visible on landing page (was hidden by Landing's zIndex:5)
+    expect(screen.getByTestId('hub-settings-gear')).toBeInTheDocument()
+  })
+
   it('keeps the opaque background and greeting when phones are docked but not projecting', async () => {
     installHub(
       mkState({
