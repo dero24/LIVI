@@ -101,19 +101,19 @@ export function HubShell() {
   // of the display are silently dropped by AaSession's SendTouch handler
   // (out of bounds after letterbox inset subtraction), and scroll sequences
   // for Messages/Music never replay correctly (work-log 22 bug 2).
-  const negotiatedWidth = useLiviStore((s) => s.negotiatedWidth)
-  const negotiatedHeight = useLiviStore((s) => s.negotiatedHeight)
+  //
+  // The tier is computed from projectionWidth/Height via matchFittingAAResolution
+  // (same as AaSession), NOT from negotiatedWidth/Height — those are never set
+  // in the renderer store (no IPC channel sends them from main).
   const liviSettings = useLiviStore((s) => s.settings)
   const touchTransform: TouchTransform | null = useMemo(
     () =>
       buildTouchTransform({
-        negotiatedWidth,
-        negotiatedHeight,
         projectionWidth: liviSettings?.projectionWidth ?? 0,
         projectionHeight: liviSettings?.projectionHeight ?? 0,
         projectionViewAreaTop: liviSettings?.projectionViewAreaTop ?? 0
       }),
-    [negotiatedWidth, negotiatedHeight, liviSettings]
+    [liviSettings]
   )
 
   // [hub] Measure the full bar (clock + presence row) and publish as
@@ -369,11 +369,14 @@ export function HubShell() {
         (t) => t.calibratable && t.key !== calibrationApp && !existing[t.key]
       )
       if (nextApp) {
-        // Continue to next app
+        // Continue to next app — do NOT re-send home. The old project
+        // (patch_homehub_v2.py) only sends home once at calibration start,
+        // then just shows the next overlay. Re-sending home resets the
+        // dashboard scroll position, so the user has to scroll again to
+        // find the next app — and the CalibrationOverlay remounts (via
+        // key={calibrationApp}) so its refs are clean.
         setCalibrationApp(nextApp.key)
         setCalibrationStep((s) => s + 1)
-        // [hub] Single home — see handleTileTap comment.
-        window.projection.ipc.sendCommand('home')
       } else {
         // All apps calibrated — return to landing
         setCalibrating(false)
@@ -398,10 +401,9 @@ export function HubShell() {
       (t) => t.calibratable && t.key !== calibrationApp && !existing[t.key]
     )
     if (nextApp) {
+      // Continue to next app — no home re-send (see handleCalibrationRecord).
       setCalibrationApp(nextApp.key)
       setCalibrationStep((s) => s + 1)
-      // [hub] Single home — see handleTileTap comment.
-      window.projection.ipc.sendCommand('home')
     } else {
       setCalibrating(false)
       setCalibrationApp(null)

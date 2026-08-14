@@ -13,11 +13,18 @@
 // This is the same logic as useProjectionTouch.ts's `norm` function, but
 // simplified for the hub's use case where the video container fills the full
 // screen (r.left = 0, r.top = 0, r.width = innerWidth, r.height = innerHeight).
+//
+// [hub] The tier is computed from the projection config using
+// matchFittingAAResolution — the same function AaSession._buildStackConfig
+// uses. This avoids depending on negotiatedWidth/Height which are never set
+// in the renderer store (no IPC channel sends them from main). For 600×1024
+// the fitting tier is always 1920×1080 (H.264 max, HEVC doesn't change it
+// because the next tier 2560×1440 would be 2.5× upscale).
 
-import { aaContentArea } from '@shared/utils'
+import { aaContentArea, matchFittingAAResolution } from '@shared/utils'
 
 export interface TouchTransform {
-  // Canonical 16:9 tier dimensions (negotiatedWidth/Height from the AA session)
+  // Canonical 16:9 tier dimensions
   streamWidth: number
   streamHeight: number
   // Content area within the tier (letterboxed)
@@ -31,36 +38,38 @@ export interface TouchTransform {
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
 
-// Build a TouchTransform from LIVI store values. Returns null if the
-// negotiated resolution or projection settings are not yet available.
+// Build a TouchTransform from projection config. Returns null if projection
+// settings are not available. The tier is computed via matchFittingAAResolution
+// (same as AaSession), so this works without negotiatedWidth/Height.
 export function buildTouchTransform(params: {
-  negotiatedWidth: number | null
-  negotiatedHeight: number | null
   projectionWidth: number
   projectionHeight: number
   projectionViewAreaTop: number
 }): TouchTransform | null {
-  const { negotiatedWidth, negotiatedHeight, projectionWidth, projectionHeight, projectionViewAreaTop } = params
-  if (
-    !negotiatedWidth ||
-    !negotiatedHeight ||
-    projectionWidth <= 0 ||
-    projectionHeight <= 0
-  ) {
-    return null
-  }
+  const { projectionWidth, projectionHeight, projectionViewAreaTop } = params
+  if (projectionWidth <= 0 || projectionHeight <= 0) return null
+
+  // Compute the AA tier the same way AaSession does. h264Only defaults to
+  // false (the Pi supports HEVC); for 600×1024 the result is 1920×1080
+  // regardless because the next tier is too much upscaling.
+  const tier = matchFittingAAResolution(
+    { width: projectionWidth, height: projectionHeight },
+    { h264Only: false }
+  )
+  const tierW = tier.width
+  const tierH = tier.height
 
   const content = aaContentArea(
-    { width: negotiatedWidth, height: negotiatedHeight },
+    { width: tierW, height: tierH },
     { width: projectionWidth, height: projectionHeight }
   )
   if (content.contentWidth <= 0 || content.contentHeight <= 0) return null
 
   return {
-    streamWidth: negotiatedWidth,
-    streamHeight: negotiatedHeight,
-    cropLeft: Math.max(0, (negotiatedWidth - content.contentWidth) / 2),
-    cropTop: Math.max(0, (negotiatedHeight - content.contentHeight) / 2),
+    streamWidth: tierW,
+    streamHeight: tierH,
+    cropLeft: Math.max(0, (tierW - content.contentWidth) / 2),
+    cropTop: Math.max(0, (tierH - content.contentHeight) / 2),
     visibleWidth: content.contentWidth,
     visibleHeight: content.contentHeight,
     viewAreaTop: Math.max(0, projectionViewAreaTop)
