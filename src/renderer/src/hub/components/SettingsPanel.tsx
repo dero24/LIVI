@@ -11,6 +11,7 @@ import SettingsIcon from '@mui/icons-material/Settings'
 import CloseIcon from '@mui/icons-material/Close'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import TuneIcon from '@mui/icons-material/Tune'
+import WifiIcon from '@mui/icons-material/Wifi'
 import { type ReactNode, useEffect, useState } from 'react'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
@@ -275,6 +276,29 @@ export function SettingsPanel({
       />
 
       <SectionTitle>Network & services</SectionTitle>
+      <Row
+        icon={<WifiIcon />}
+        title="Reset WiFi"
+        subtitle="Bounces wlan0 down/up + nmcli reconnect. Use when SSH or network is unreachable."
+        action={
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={busy === 'ResetWiFi'}
+            onClick={() => {
+              setBusy('ResetWiFi')
+              setMsg(null)
+              fetch('http://localhost:8125/reset-wifi')
+                .then(r => r.json())
+                .then(d => setMsg(d.ok ? 'WiFi reset OK' : 'WiFi reset failed'))
+                .catch(() => setMsg('WiFi reset failed'))
+                .finally(() => setBusy(null))
+            }}
+          >
+            Reset
+          </Button>
+        }
+      />
       {netErr && (
         <Typography sx={{ fontSize: '0.75rem', color: '#ff6b6b' }}>
           Recovery server unreachable: {netErr}

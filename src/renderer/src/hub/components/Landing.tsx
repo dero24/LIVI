@@ -15,6 +15,7 @@
 
 import { Box, Typography } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { displayToTouchNorm } from '../touchNorm'
 import { useHubTokens } from '../useHubTokens'
 import type { HubPhone } from '../types'
 
@@ -108,8 +109,7 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
         justifyContent: 'flex-start',
         gap: 'clamp(0.75rem, 2vh, 1.5rem)',
         padding: 'clamp(0.75rem, 2vw, 1.5rem)',
-        backgroundColor: 'rgba(13,17,23,0.82)',
-        backdropFilter: 'blur(8px)',
+        backgroundColor: t.bg,
         transition: 'opacity 400ms cubic-bezier(0.4, 0, 0.2, 1)',
         pointerEvents: 'auto',
         overflow: 'hidden',
@@ -123,7 +123,7 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
       <Box
         sx={{
           width: '100%',
-          maxWidth: '500px',
+          maxWidth: '560px',
           display: 'flex',
           alignItems: 'center',
           gap: '0.75rem',
@@ -197,7 +197,7 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
           gridTemplateColumns: '1fr 1fr',
           gap: 'clamp(0.75rem, 2vw, 1.25rem)',
           width: '100%',
-          maxWidth: '500px',
+          maxWidth: '560px',
           flex: 1,
           alignContent: 'center'
         }}
@@ -223,7 +223,7 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '0.5rem',
-                aspectRatio: '1.5',
+                aspectRatio: '1.3',
                 borderRadius: '16px',
                 backgroundColor: 'rgba(255,255,255,0.03)',
                 border: '1px solid rgba(255,255,255,0.05)',
@@ -288,6 +288,13 @@ export interface CalibrationOverlayProps {
   totalSteps: number
   onRecord: (x: number, y: number, sequence: { x: number; y: number; action: number; delay: number }[]) => void
   onSkip: () => void
+  // [hub] Touch coordinate transform for live forwarding during calibration.
+  // The overlay records display px (e.clientX/Y) and the caller converts at
+  // replay time. But live forwarding (deferred-down + scroll moves) must also
+  // convert display px → normalized tier coords, otherwise the user can't
+  // scroll the AA dashboard to find Messages/Music during calibration
+  // (work-log 22 bug 2). When null, falls back to simple x/innerWidth.
+  touchTransform?: import('../touchNorm').TouchTransform | null
 }
 
 export function CalibrationOverlay({
@@ -296,7 +303,8 @@ export function CalibrationOverlay({
   step,
   totalSteps,
   onRecord,
-  onSkip
+  onSkip,
+  touchTransform
 }: CalibrationOverlayProps) {
   const t = useHubTokens()
   const [recording, setRecording] = useState(false)
@@ -306,6 +314,19 @@ export function CalibrationOverlay({
   const stepSequence = useRef<{ x: number; y: number; action: number; delay: number }[]>([])
   const startTime = useRef(0)
   const lastEventTime = useRef(0)
+
+  // [hub] Convert display px → normalized tier coords for live forwarding.
+  // Falls back to simple x/innerWidth if no transform is available.
+  const toNorm = useCallback(
+    (x: number, y: number): { x: number; y: number } => {
+      if (touchTransform) {
+        const n = displayToTouchNorm(x, y, touchTransform, window.innerWidth, window.innerHeight)
+        if (n) return n
+      }
+      return { x: x / window.innerWidth, y: y / window.innerHeight }
+    },
+    [touchTransform]
+  )
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -335,13 +356,11 @@ export function CalibrationOverlay({
         if (dist > 8) {
           // Scroll detected — send deferred DOWN + buffered moves to AA
           scrolling.current = true
-          window.projection.ipc.sendTouch(
-            pointerDownPos.current.x / window.innerWidth,
-            pointerDownPos.current.y / window.innerHeight,
-            14
-          )
+          const dn = toNorm(pointerDownPos.current.x, pointerDownPos.current.y)
+          window.projection.ipc.sendTouch(dn.x, dn.y, 14)
           for (const m of pendingMoves.current) {
-            window.projection.ipc.sendTouch(m.x / window.innerWidth, m.y / window.innerHeight, 15)
+            const mn = toNorm(m.x, m.y)
+            window.projection.ipc.sendTouch(mn.x, mn.y, 15)
           }
           pendingMoves.current = []
         } else {
@@ -352,9 +371,10 @@ export function CalibrationOverlay({
       }
       // Scrolling — forward to AA
       stepSequence.current.push({ x: e.clientX, y: e.clientY, action: 15, delay })
-      window.projection.ipc.sendTouch(e.clientX / window.innerWidth, e.clientY / window.innerHeight, 15)
+      const sn = toNorm(e.clientX, e.clientY)
+      window.projection.ipc.sendTouch(sn.x, sn.y, 15)
     },
-    []
+    [toNorm]
   )
 
   const handlePointerUp = useCallback(
@@ -371,7 +391,8 @@ export function CalibrationOverlay({
       if (scrolling.current) {
         // Was a scroll — send UP to AA
         stepSequence.current.push({ x: e.clientX, y: e.clientY, action: 16, delay })
-        window.projection.ipc.sendTouch(e.clientX / window.innerWidth, e.clientY / window.innerHeight, 16)
+        const un = toNorm(e.clientX, e.clientY)
+        window.projection.ipc.sendTouch(un.x, un.y, 16)
         pointerDownPos.current = null
         scrolling.current = false
         // Don't advance — user is still looking
@@ -385,7 +406,7 @@ export function CalibrationOverlay({
         setRecording(false)
       }
     },
-    [onRecord]
+    [onRecord, toNorm]
   )
 
   return (
