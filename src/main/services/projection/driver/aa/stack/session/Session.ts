@@ -173,6 +173,14 @@ export class Session extends EventEmitter {
   // on transitions (idle → ringing → active → idle). 'idle' is the initial.
   private _lastCallAggregate: 'idle' | 'ringing' | 'active' = 'idle'
 
+  // [hub] ring-trace (Stage 0.1): make the silent Tier-2 hop loud during
+  // bring-up. Answers "does anything arrive on ch 14, with what msgId, and is
+  // calls[] ever present?" without spamming the log on periodic status frames.
+  // Grep the whole ring chain with `[ring-trace]`.
+  private _ringTraceMsgIds = new Set<number>()
+  private _ringTraceCallsSeen = false
+  private _ringTraceNoCalls = false
+
   constructor(
     private readonly _sock: net.Socket,
     private readonly _cfg: SessionConfig
@@ -464,6 +472,14 @@ export class Session extends EventEmitter {
     }
 
     if (channelId === CH.PHONE_STATUS) {
+      // [hub] ring-trace (Stage 0.1): log every distinct msgId seen on ch 14
+      // exactly once. If the phone never sends 0x8001, this is where Tier 2 dies.
+      if (!this._ringTraceMsgIds.has(msgId)) {
+        this._ringTraceMsgIds.add(msgId)
+        console.log(
+          `[ring-trace] Session: PHONE_STATUS ch=${channelId} msgId=0x${msgId.toString(16)}`
+        )
+      }
       if (msgId === 0x8001) {
         try {
           const ps = decode(this._proto.PhoneStatus, payload)
@@ -483,15 +499,33 @@ export class Session extends EventEmitter {
           // fire ProjectionAudio's callState event (§9.2 Tier 2, §9.4).
           const calls = ps['calls']
           if (Array.isArray(calls)) {
+            // [hub] ring-trace: confirm calls[] exists on this device (once), and
+            // dump its contents whenever it is non-empty (calls are rare → cheap).
+            if (!this._ringTraceCallsSeen) {
+              this._ringTraceCallsSeen = true
+              console.log('[ring-trace] Session: PhoneStatus HAS a calls[] field')
+            }
+            if (calls.length > 0) {
+              console.log(`[ring-trace] Session: PhoneStatus.calls=${JSON.stringify(calls)}`)
+            }
             const aggregate = this._aggregateCallState(calls as { phone_state?: number }[])
             if (aggregate !== this._lastCallAggregate) {
               this._lastCallAggregate = aggregate
               this.emit('phone-call-state', aggregate)
-              if (DEBUG) console.log(`[Session] phone-call-state → ${aggregate}`)
+              console.log(`[ring-trace] Session: phone-call-state → ${aggregate}`)
             }
+          } else if (!this._ringTraceNoCalls) {
+            // [hub] ring-trace: the message decoded but has NO calls field. Dump
+            // its keys so we know what the Samsung actually sends on ch 14.
+            this._ringTraceNoCalls = true
+            console.log(
+              `[ring-trace] Session: PhoneStatus decoded, NO calls field; keys=${Object.keys(
+                ps as object
+              ).join(',')}`
+            )
           }
         } catch (e) {
-          if (DEBUG) console.warn('[Session] phone-status parse error:', e)
+          console.warn('[ring-trace] Session: phone-status parse error:', e)
         }
       }
       return

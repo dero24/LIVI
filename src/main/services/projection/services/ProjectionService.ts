@@ -1,5 +1,5 @@
 import { configEvents } from '@main/ipc/utils'
-import { SystemSound } from '@main/services/audio'
+import { Ringtone, SystemSound } from '@main/services/audio'
 import { broadcastToSecondaryRenderers } from '@main/window/broadcast'
 import { getSecondaryWindow } from '@main/window/secondaryWindows'
 import { ICON_120_B64, ICON_180_B64, ICON_256_B64 } from '@shared/assets/carIcons'
@@ -458,6 +458,9 @@ export class ProjectionService {
 
   private audio: ProjectionAudio
   private systemSound = new SystemSound(() => this.config)
+  // [hub] Stage 1.1: the hub ringtone, driven on/off by hubd via the HubBridge
+  // (playRingtone / stopRingtone) from HubState.ring.tone.
+  private ringtone = new Ringtone(() => this.config)
 
   private readonly onConfigChanged = (next: Config) => {
     if (this.shuttingDown) return
@@ -505,6 +508,7 @@ export class ProjectionService {
     if (outChanged || inChanged) {
       this.audio.onAudioDeviceChanged()
       if (outChanged) this.systemSound.onDeviceChanged()
+      if (outChanged) this.ringtone.onDeviceChanged()
       this.connectConfiguredAudioDevices().catch(() => {})
     }
   }
@@ -1148,6 +1152,7 @@ export class ProjectionService {
     this.shuttingDown = true
     this.unsubscribeConfigEvents()
     this.systemSound.dispose()
+    this.ringtone.dispose()
     this.audioMonitor?.stop()
     this.audioMonitor = null
   }
@@ -1946,6 +1951,18 @@ export class ProjectionService {
     const input = inputMap[key]
     if (input) {
       this.dispatchRemoteInput(input)
+      return { ok: true }
+    }
+    // [hub] Stage 1.1: the hub ringtone. hubd sends playRingtone when
+    // HubState.ring.tone goes true and stopRingtone when it goes false (§4 of
+    // RING_DESIGN). All tone gating (DND / quiet-hours / active-call) is decided
+    // in hubd/ring.py; here we only play or stop.
+    if (key === 'playRingtone') {
+      this.ringtone.start()
+      return { ok: true }
+    }
+    if (key === 'stopRingtone') {
+      this.ringtone.stop()
       return { ok: true }
     }
     // [hub] Phase 2.5: outbound HFP call control via aa_handler.py's fd registry.

@@ -249,7 +249,7 @@ export class AaEventBridge {
             ? AudioCommand.AudioPhonecallStart
             : AudioCommand.AudioPhonecallStop
       console.log(
-        `[AaEventBridge] phone-call-state ${prev}→${state} → AudioCommand=${AudioCommand[cmd]}`
+        `[ring-trace] AaEventBridge: phone-call-state ${prev}→${state} → AudioCommand=${AudioCommand[cmd]}`
       )
       deps.emitMessage(buildAudioCommandMessage('phone', cmd) as Message)
     })

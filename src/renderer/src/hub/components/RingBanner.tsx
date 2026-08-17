@@ -63,25 +63,45 @@ export function RingBanner({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(0,0,0,0.55)',
+        // A dim base for legibility over projection, plus a warm lamp-like glow
+        // (DESIGN_VISION: "a soft warmth — not red, not alarming, more like the
+        // glow of a lamp turning on"). The glow breathes on a 2 s cycle — it is
+        // alive, not flashing. Rendered on ::before so it can pulse independently.
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        '&::before': {
+          content: '""',
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          background:
+            'radial-gradient(120% 90% at 50% 44%, rgba(255,150,90,0.24) 0%, ' +
+            'rgba(255,107,107,0.12) 40%, rgba(0,0,0,0) 74%)',
+          animation: 'hub-ambient-pulse 2s ease-in-out infinite'
+        },
         // The banner *arrives* (DESIGN_VISION), but the buttons are live
         // immediately — animation never gates the action (§9.1 R-2).
-        animation: 'hub-ring-in 180ms ease-out'
+        animation: 'hub-ring-in 300ms cubic-bezier(0.16, 1, 0.3, 1)'
       }}
     >
       <Box
         sx={{
+          // Above the ambient glow (::before) so the card stays crisp.
+          position: 'relative',
+          zIndex: 1,
           width: 'min(92%, 540px)',
           backgroundColor: t.surface,
           color: t.text,
           borderRadius: '20px',
           border: `1px solid ${t.border}`,
-          boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
+          // A soft warm halo under the card reinforces the lamp feeling.
+          boxShadow: '0 12px 40px rgba(0,0,0,0.4), 0 0 60px rgba(255,140,90,0.18)',
           padding: 'clamp(1.2rem, 4vw, 2rem)',
           display: 'flex',
           flexDirection: 'column',
           gap: '0.6rem',
-          textAlign: 'center'
+          textAlign: 'center',
+          // The card springs in — "someone walking into the room" (DESIGN_VISION).
+          animation: 'hub-ring-card-in 300ms cubic-bezier(0.16, 1, 0.3, 1)'
         }}
       >
         {/* Phone icon + caller name: the largest text on screen (§12.6). */}
@@ -151,7 +171,22 @@ export function RingBanner({
         </Box>
       </Box>
 
-      <style>{`@keyframes hub-ring-in { from { opacity: 0 } to { opacity: 1 } }`}</style>
+      <style>{`
+        @keyframes hub-ring-in { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes hub-ring-card-in {
+          from { opacity: 0; transform: translateY(12px) scale(0.94) }
+          to   { opacity: 1; transform: translateY(0) scale(1) }
+        }
+        @keyframes hub-ambient-pulse {
+          0%, 100% { opacity: 0.55 }
+          50% { opacity: 1 }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          [data-testid="hub-ring-banner"], [data-testid="hub-ring-banner"] * {
+            animation: none !important;
+          }
+        }
+      `}</style>
     </Box>
   )
 }

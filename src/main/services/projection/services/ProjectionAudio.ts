@@ -135,6 +135,13 @@ export class ProjectionAudio {
     if (this.callStatePhase === phase) return
     this.callStatePhase = phase
     const ctx = this.getCallContext?.()
+    // [hub] ring-trace (Stage 0.1): the emit point. A null sessionIndex here means
+    // hubd cannot correlate the call to a phoneId and will drop it (§9.2).
+    console.log(
+      `[ring-trace] ProjectionAudio: callState phase=${phase} sessionIndex=${
+        ctx?.sessionIndex ?? 'null'
+      }`
+    )
     this.sendProjectionEvent({
       type: 'callState',
       payload: {

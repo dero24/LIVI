@@ -122,6 +122,14 @@ export class HubBridge {
   }
 
   private broadcastEvent(e: ProjectionEvent): void {
+    // [hub] ring-trace (Stage 0.1): the last LIVI-side hop before hubd. If a
+    // callState/hfp event reaches here with zero subscribers, hubd is not
+    // attached and the signal dies silently — surface that.
+    if (e.type === 'callState' || e.type === 'hfpRing' || e.type === 'hfpClip') {
+      console.log(
+        `[ring-trace] HubBridge: forwarding ${e.type} to ${this.subscribers.size} subscriber(s)`
+      )
+    }
     if (this.subscribers.size === 0) return
     const frame = `${JSON.stringify({ ev: e.type, ...e })}\n`
     for (const s of this.subscribers) {
