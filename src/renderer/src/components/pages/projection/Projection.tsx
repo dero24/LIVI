@@ -649,8 +649,9 @@ const CarplayComponent: React.FC<CarplayProps> = ({
           cropTop: Math.max(0, (resolvedNegotiatedHeight - visibleHeight) / 2),
           visibleWidth,
           visibleHeight,
-          // [hub] §12.2: offset touches by the view-area top (the bar height)
-          // so they map to the correct position in the AA content area below the bar.
+          // [hub] §12.2: viewAreaTop is passed for interface compatibility but
+          // is NOT used in the coordinate conversion — AaSession's _touchInsetTop
+          // already handles the bar offset. See useProjectionTouch.ts norm().
           viewAreaTop: settings.projectionViewAreaTop ?? 0
         }
       : undefined

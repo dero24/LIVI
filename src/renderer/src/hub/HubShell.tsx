@@ -238,9 +238,9 @@ export function HubShell() {
           // Replay recorded touch sequence (scrolls + final tap).
           // [hub] The recorded coordinates are display px (e.clientX/Y from
           // the CalibrationOverlay). Convert to normalized tier coords using
-          // the same letterbox+viewAreaTop logic as the projection page's
-          // norm function. Without this, touches outside the center ~1/3
-          // of the display are silently dropped by AaSession (work-log 22 bug 2).
+          // displayToTouchNorm, which maps display px → tier content px
+          // linearly (no viewAreaTop Y offset — AaSession handles the bar
+          // offset via _touchInsetTop). See touchNorm.ts for details.
           const w = window.innerWidth
           const h = window.innerHeight
           let i = 0

@@ -20,10 +20,10 @@ type TouchTransform = {
   cropTop: number
   visibleWidth: number
   visibleHeight: number
-  // [hub] §12.2: the view-area top inset (projectionViewAreaTop). The
-  // videoContainer covers the full screen, but the AA content only fills
-  // below the bar. Touches must be offset by this amount so they map to
-  // the correct position in the AA content area.
+  // [hub] §12.2: the view-area top inset (projectionViewAreaTop). Kept for
+  // interface compatibility but NOT used in the coordinate conversion —
+  // AaSession's _touchInsetTop already subtracts the bar offset from tierY.
+  // Offsetting Y here too would double-offset (Bug A/B, work-log 23).
   viewAreaTop?: number
 }
 
@@ -54,33 +54,24 @@ const norm = (
     return { x: clamp01(lx / r.width), y: clamp01(ly / r.height) }
   }
 
-  // display-letterbox by the content AR
-  // [hub] §12.2: the AA content starts at viewAreaTop (below the bar),
-  // not at the top of the videoContainer. Offset the Y coordinate so
-  // touches map to the correct position in the AA content area.
-  const vat = transform.viewAreaTop ?? 0
-  const contentAR = transform.visibleWidth / transform.visibleHeight
-  // The display area for AA content is from viewAreaTop to bottom of container
-  const contentAreaHeight = r.height - vat
-  let dispW = r.width
-  let dispH = contentAreaHeight
-  let offX = 0
-  let offY = vat
-  if (r.width / contentAreaHeight > contentAR) {
-    dispW = contentAreaHeight * contentAR
-    offX = (r.width - dispW) / 2
-  } else {
-    dispH = r.width / contentAR
-    offY = vat + (contentAreaHeight - dispH) / 2
-  }
+  // [hub] Map container px → tier content px (linear, no display-side
+  // letterbox, no viewAreaTop Y offset). The display shows the AA content
+  // area stretched to fill the container — the letterbox margins are IN the
+  // tier (cropLeft/cropTop), not in the display. The bar offset
+  // (viewAreaTop/projectionViewAreaTop) is handled by AaSession's
+  // _touchInsetTop subtraction. Offsetting Y here would double-offset
+  // (renderer + AaSession both subtract the bar height), causing touches
+  // to land too low or be dropped entirely (Bug A/B, work-log 23).
+  //
+  // This matches the old project (patch_homehub_v2.py:174-178):
+  //   tierX = cropLeft + (dispX / displayW) * visibleWidth
+  //   tierY = (dispY / displayH) * streamHeight
+  const lx = cx - r.left
+  const ly = cy - r.top
+  if (lx < 0 || lx > r.width || ly < 0 || ly > r.height) return null
 
-  const lx = cx - r.left - offX
-  const ly = cy - r.top - offY
-  if (lx < 0 || lx > dispW || ly < 0 || ly > dispH) return null
-
-  // content-crop onto the transport tier
-  const streamX = transform.cropLeft + (lx / dispW) * transform.visibleWidth
-  const streamY = transform.cropTop + (ly / dispH) * transform.visibleHeight
+  const streamX = transform.cropLeft + (lx / r.width) * transform.visibleWidth
+  const streamY = (ly / r.height) * transform.streamHeight
   return {
     x: clamp01(streamX / transform.streamWidth),
     y: clamp01(streamY / transform.streamHeight)

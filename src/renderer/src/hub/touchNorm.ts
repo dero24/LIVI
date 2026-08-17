@@ -2,17 +2,20 @@
 //
 // The AA video is rendered into a 16:9 "tier" frame (e.g. 1920×1080) with the
 // portrait content letterboxed inside it (e.g. 632×1080 centered with 644px
-// margins). The GStreamer pipeline stretches this tier to fill the physical
-// display (600×1024), minus the bar inset (projectionViewAreaTop).
+// margins). The GStreamer pipeline crops the content area from the tier and
+// stretches it to fill the physical display (600×1024).
 //
 // The AaSession's SendTouch handler expects normalized coordinates (0-1)
-// relative to the FULL tier, then subtracts the letterbox insets internally.
-// So the renderer must map display px → tier px (accounting for letterboxing
-// and the view-area top offset) → normalized 0-1.
+// relative to the FULL tier, then subtracts the letterbox+view-area insets
+// internally (_touchInsetTop = arTop + projectionViewAreaTop, _touchInsetLeft
+// = arLeft, etc.). So the renderer must map display px → tier content px →
+// normalized 0-1, WITHOUT offsetting for the bar — AaSession handles that.
 //
-// This is the same logic as useProjectionTouch.ts's `norm` function, but
-// simplified for the hub's use case where the video container fills the full
-// screen (r.left = 0, r.top = 0, r.width = innerWidth, r.height = innerHeight).
+// [hub] CRITICAL: Do NOT offset Y by viewAreaTop here. AaSession already
+// subtracts _touchInsetTop (which includes projectionViewAreaTop) from tierY.
+// Offsetting Y in the renderer too causes a DOUBLE offset — touches land too
+// low or are silently dropped (uy < 0 in AaSession). The old project
+// (patch_homehub_v2.py:174-178) does NOT offset Y: tierY = (dispY/1024)*1080.
 //
 // [hub] The tier is computed from the projection config using
 // matchFittingAAResolution — the same function AaSession._buildStackConfig
@@ -78,7 +81,23 @@ export function buildTouchTransform(params: {
 
 // Convert display px (e.clientX, e.clientY) to normalized touch coords (0-1)
 // relative to the full AA tier. Returns null if the touch is outside the
-// content area (letterboxed region below the bar).
+// display bounds. AaSession handles the letterbox inset + view-area top
+// subtraction internally — this function does NOT offset by viewAreaTop.
+//
+// This matches the old project's coordinate conversion
+// (patch_homehub_v2.py:174-178):
+//   tierX = cropLeft + (dispX / displayWidth) * visibleWidth
+//   tierY = (dispY / displayHeight) * streamHeight
+//   normX = tierX / streamWidth
+//   normY = tierY / streamHeight
+//
+// The display shows the AA content area (e.g. 632×1080) stretched to fill
+// the full display (e.g. 600×1024). The letterbox margins (644px left/right)
+// are IN the tier, not in the display — the display has no letterbox bars.
+// The bar offset (viewAreaTop) is handled by AaSession's _touchInsetTop
+// subtraction. Offsetting Y here would double-offset (renderer + AaSession
+// both subtract the bar height), causing touches to land too low or be
+// dropped entirely (Bug A/B, work-log 23).
 export function displayToTouchNorm(
   dispX: number,
   dispY: number,
@@ -86,40 +105,17 @@ export function displayToTouchNorm(
   displayWidth: number,
   displayHeight: number
 ): { x: number; y: number } | null {
-  // The video container fills the full screen.
-  const rLeft = 0
-  const rTop = 0
-  const rWidth = displayWidth
-  const rHeight = displayHeight
+  if (displayWidth <= 0 || displayHeight <= 0) return null
+  if (dispX < 0 || dispX > displayWidth || dispY < 0 || dispY > displayHeight) return null
 
-  // Content area on the display: from viewAreaTop to bottom.
-  const vat = transform.viewAreaTop
-  const contentAreaHeight = rHeight - vat
-  if (contentAreaHeight <= 0) return null
-
-  // Letterbox the content within the available area based on content AR.
-  const contentAR = transform.visibleWidth / transform.visibleHeight
-  let dispW = rWidth
-  let dispH = contentAreaHeight
-  let offX = 0
-  let offY = vat
-  if (rWidth / contentAreaHeight > contentAR) {
-    dispW = contentAreaHeight * contentAR
-    offX = (rWidth - dispW) / 2
-  } else {
-    dispH = rWidth / contentAR
-    offY = vat + (contentAreaHeight - dispH) / 2
-  }
-
-  const lx = dispX - rLeft - offX
-  const ly = dispY - rTop - offY
-  if (lx < 0 || lx > dispW || ly < 0 || ly > dispH) return null
-
-  // Map from display content area to tier content area, then normalize.
-  const streamX = transform.cropLeft + (lx / dispW) * transform.visibleWidth
-  const streamY = transform.cropTop + (ly / dispH) * transform.visibleHeight
+  // Map display px → tier content px (linear, no display-side letterbox).
+  // X: full display width maps to the content area width within the tier.
+  // Y: full display height maps to the full tier height (NOT the content
+  //    area height — the bar offset is handled by AaSession's _touchInsetTop).
+  const tierX = transform.cropLeft + (dispX / displayWidth) * transform.visibleWidth
+  const tierY = (dispY / displayHeight) * transform.streamHeight
   return {
-    x: clamp01(streamX / transform.streamWidth),
-    y: clamp01(streamY / transform.streamHeight)
+    x: clamp01(tierX / transform.streamWidth),
+    y: clamp01(tierY / transform.streamHeight)
   }
 }
