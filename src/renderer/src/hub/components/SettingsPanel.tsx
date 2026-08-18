@@ -12,7 +12,7 @@ import CloseIcon from '@mui/icons-material/Close'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import TuneIcon from '@mui/icons-material/Tune'
 import WifiIcon from '@mui/icons-material/Wifi'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useLiviStore } from '@store/store'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
@@ -117,18 +117,31 @@ export function SettingsPanel({
   }, [open])
 
   // [hub] Fix 4 / work-log 27: fetch audio devices from hubd
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
+  // [hub] (work-log 31): also refresh when USB devices are attached/detached
+  // so plugged-in headphones show up without closing/reopening settings.
+  const fetchAudioDevices = useCallback(() => {
     fetch('http://localhost:8123/audio-devices', { cache: 'no-store' })
       .then((r) => r.json())
       .then((d: { sinks: { id: string; name: string }[]; sources: { id: string; name: string }[] }) => {
-        if (cancelled) return
         setAudioDevices(d)
       })
       .catch(() => {})
-    return () => { cancelled = true }
-  }, [open])
+  }, [])
+  useEffect(() => {
+    if (!open) return
+    fetchAudioDevices()
+    const usbHandler = (_evt: unknown, ...args: unknown[]) => {
+      const data = (args[0] ?? {}) as { type?: string }
+      if (data.type && ['attach', 'plugged', 'detach', 'unplugged'].includes(data.type)) {
+        // Debounce — USB enumeration takes a moment after the event
+        setTimeout(fetchAudioDevices, 500)
+      }
+    }
+    const unsubscribe = window.projection?.usb?.listenForEvents?.(usbHandler)
+    return () => {
+      unsubscribe?.()
+    }
+  }, [open, fetchAudioDevices])
 
   const run = async (key: string, fn: () => void) => {
     setBusy(key)
@@ -181,41 +194,64 @@ export function SettingsPanel({
           No phones known. Dock a phone to begin.
         </Typography>
       ) : (
-        phones.map((p) => (
-          <Box key={p.phoneId} sx={{ marginBottom: '0.5rem' }}>
-            <Row
-              icon={
-                <Box sx={{
-                  width: '1.5rem', height: '1.5rem', borderRadius: '50%',
-                  backgroundColor: p.person?.colour ?? '#4F7CAC',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: '#fff', fontSize: '0.7rem', fontWeight: 600
-                }}>
-                  {(p.person?.name ?? 'P').charAt(0).toUpperCase()}
-                </Box>
-              }
-              title={p.person?.name ?? 'Unknown'}
-              subtitle={`${p.presence.level}${p.livi?.batteryLevel != null ? ` · ${p.livi.batteryLevel}%` : ''}`}
-              action={
-                p.presence.level === 'projecting' ? (
-                  <Button
-                    size="small"
-                    color="error"
-                    variant="outlined"
-                    disabled={busy === 'Forget'}
-                    onClick={() => run('Forget', () => intent({ type: 'phone.forget', phoneId: p.phoneId }))}
-                  >
-                    Forget
-                  </Button>
-                ) : (
-                  <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)' }}>
-                    {p.presence.level === 'absent' ? 'Away' : 'Dock to manage'}
-                  </Typography>
-                )
-              }
-            />
-          </Box>
-        ))
+        phones.map((p) => {
+          // [hub] (work-log 31): show device name when person name is null,
+          // and allow forgetting any phone (not just projecting ones).
+          const displayName = p.person?.name || p.person?.deviceName || 'Unknown'
+          const subtitleParts = [p.presence.level]
+          if (p.livi?.batteryLevel != null) subtitleParts.push(`${p.livi.batteryLevel}%`)
+          if (p.platform) subtitleParts.push(p.platform)
+          return (
+            <Box key={p.phoneId} sx={{ marginBottom: '0.5rem' }}>
+              <Row
+                icon={
+                  <Box sx={{
+                    width: '1.5rem', height: '1.5rem', borderRadius: '50%',
+                    backgroundColor: p.person?.colour ?? '#4F7CAC',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: '#fff', fontSize: '0.7rem', fontWeight: 600
+                  }}>
+                    {(p.person?.name ?? p.person?.deviceName ?? 'P').charAt(0).toUpperCase()}
+                  </Box>
+                }
+                title={displayName}
+                subtitle={subtitleParts.join(' · ')}
+                action={
+                  <Box sx={{ display: 'flex', gap: '0.5rem' }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={busy === `Rename-${p.phoneId}`}
+                      onClick={() => {
+                        const name = prompt('Name this phone:', p.person?.name ?? '')
+                        if (name && name.trim()) {
+                          run(`Rename-${p.phoneId}`, () => intent({ type: 'phone.rename', phoneId: p.phoneId, name: name.trim() }))
+                        }
+                      }}
+                      sx={{ color: t.text, borderColor: t.border, textTransform: 'none', fontSize: '0.75rem' }}
+                    >
+                      Rename
+                    </Button>
+                    <Button
+                      size="small"
+                      color="error"
+                      variant="outlined"
+                      disabled={busy === `Forget-${p.phoneId}`}
+                      onClick={() => {
+                        if (confirm(`Forget ${displayName}? This removes the phone from the hub.`)) {
+                          run(`Forget-${p.phoneId}`, () => intent({ type: 'phone.forget', phoneId: p.phoneId }))
+                        }
+                      }}
+                      sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                    >
+                      Forget
+                    </Button>
+                  </Box>
+                }
+              />
+            </Box>
+          )
+        })
       )}
 
       <SectionTitle>Calibration</SectionTitle>
@@ -279,6 +315,30 @@ export function SettingsPanel({
       )}
 
       <SectionTitle>Audio</SectionTitle>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+        <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)' }}>
+          {audioDevices ? `${audioDevices.sinks.length} outputs · ${audioDevices.sources.length} inputs` : 'Loading…'}
+        </Typography>
+        <Button
+          size="small"
+          variant="text"
+          disabled={busy === 'RefreshAudio'}
+          onClick={() => {
+            setBusy('RefreshAudio')
+            fetch('http://localhost:8123/audio-devices', { cache: 'no-store' })
+              .then((r) => r.json())
+              .then((d: { sinks: { id: string; name: string }[]; sources: { id: string; name: string }[] }) => {
+                setAudioDevices(d)
+                setMsg(`Found ${d.sinks.length} outputs, ${d.sources.length} inputs`)
+              })
+              .catch(() => setMsg('Failed to refresh audio devices'))
+              .finally(() => setBusy(null))
+          }}
+          sx={{ color: t.textMuted, textTransform: 'none', fontSize: '0.75rem', minWidth: 'auto' }}
+        >
+          ↻ Refresh
+        </Button>
+      </Box>
       <Box sx={{ padding: '0.5rem 0' }}>
         <Typography sx={{ fontSize: '0.8rem', fontWeight: 500, marginBottom: '0.25rem' }}>Output device</Typography>
         <Select

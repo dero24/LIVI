@@ -2294,6 +2294,26 @@ export class ProjectionService {
       if (!this.isStarting) {
         if (!prev) this.audio.resetForSessionStart()
         next.driver.requestKeyframe?.()
+        // [hub] (work-log 31): suppress auto-play. When a phone connects via
+        // AA, the phone's media app (Spotify etc.) often auto-plays because it
+        // was the last active media app. Send a playPause toggle after a short
+        // delay to pause it. The delay lets the session fully establish before
+        // we send the command. Only fires on the first session (no prev), not
+        // on session switches.
+        if (!prev && next.protocol === 'androidauto') {
+          setTimeout(() => {
+            try {
+              next.driver.sendCommand?.('playPause')
+              // Send it again after a brief delay — the first toggle may pause,
+              // but sometimes the phone auto-plays again after a moment.
+              // A single playPause is safer (toggle could resume if already paused).
+              // We send ONE toggle: if auto-play just started, this pauses it.
+              console.log('[hub] auto-play suppress: playPause sent')
+            } catch (e) {
+              console.warn('[hub] auto-play suppress failed', e)
+            }
+          }, 2000)
+        }
       }
     } else {
       this.teardownToIdle()

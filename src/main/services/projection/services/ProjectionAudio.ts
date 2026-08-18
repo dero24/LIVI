@@ -399,12 +399,22 @@ export class ProjectionAudio {
           }
 
           // Ducking: navActive lowers, navHoldUntil debounces restore.
+          // [hub] Bug B fix (work-log 31): also consult ringDuckingActive so the
+          // ring ducking target is not overwritten by the loop. The previous code
+          // only checked navActive — when nav was not active, it set
+          // desiredTarget=1 (full volume), overwriting the ringDuckingTarget
+          // (0.15) that duckMediaForRing(true) had just set. Now ring ducking
+          // takes priority over nav ducking (a ring is more important than nav),
+          // and the restore-to-1 path only fires when neither is active.
           const canDuckNow = this.navActive
           const canRestoreNow =
             !this.navActive && (this.navHoldUntil === 0 || now >= this.navHoldUntil)
 
           let desiredTarget: number
-          if (canDuckNow) {
+          if (this.ringDuckingActive) {
+            // [hub] Ring ducking takes priority — a ring is more important than nav.
+            desiredTarget = this.ringDuckingTarget
+          } else if (canDuckNow) {
             desiredTarget = this.navDuckingTarget
           } else if (canRestoreNow) {
             desiredTarget = 1
@@ -747,6 +757,12 @@ export class ProjectionAudio {
           if (decodeTypeChanged && this._mic && this._mic.isCapturing()) {
             this._mic.start(this.currentMicDecodeType)
           }
+          // [hub] (work-log 31): if a phone call is active but the mic wasn't
+          // started because decodeType hadn't arrived yet, start it now.
+          if (this.phonecallActive && this._mic && !this._mic.isCapturing()) {
+            console.log('[ProjectionAudio] late mic start — decodeType arrived after AudioPhonecallStart')
+            this._mic.start(this.currentMicDecodeType)
+          }
         }
         return
       }
@@ -808,12 +824,12 @@ export class ProjectionAudio {
         }
 
         if (this.currentMicDecodeType == null) {
-          if (DEBUG) {
-            console.debug('[ProjectionAudio] skip mic start without decodeType', {
-              ts: Date.now(),
-              cmd
-            })
-          }
+          // [hub] (work-log 31): log this as a warning — the mic won't start
+          // until AudioInputConfig arrives with the decodeType. This is the
+          // root cause of one-way call audio (caller can hear you, you can't
+          // hear caller). The late-start fix above handles this when
+          // AudioInputConfig eventually arrives.
+          console.warn('[ProjectionAudio] mic start delayed — no decodeType yet (AudioInputConfig not received)')
           return
         }
 
