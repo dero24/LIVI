@@ -105,6 +105,21 @@ export class AaSession extends EventEmitter implements IPhoneDriver {
   private _micActive = false
 
   private _bridge: AaEventBridge | null = null
+  // [hub] Fix 4 (work-log 27): expose caller info from the event bridge so
+  // ProjectionService can thread it into ProjectionAudio's callState payload.
+  get callerInfo(): { name?: string; number?: string } {
+    const info = { name: this._bridge?.callerName, number: this._bridge?.callerNumber }
+    // [hub] ring-trace (work-log 27 Bug D): if _bridge is null or the fields are
+    // undefined, the caller info is lost here. A null _bridge means the session
+    // was torn down (see _stop) or the bridge was never wired.
+    console.log(
+      `[ring-trace] AaSession.callerInfo: bridge=%s name=%s number=%s`,
+      this._bridge ? 'set' : 'null',
+      info.name ?? 'null',
+      info.number ?? 'null'
+    )
+    return info
+  }
   private _hevcSupported: boolean
   private _vp9Supported: boolean
   private _av1Supported: boolean

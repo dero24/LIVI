@@ -28,12 +28,12 @@ export function NamingSheet({
   onEnrolStart
 }: NamingSheetProps) {
   const t = useHubTokens()
-  const [name, setName] = useState(phone.person?.name ?? '')
+  const [name, setName] = useState('')
   const [autoDock, setAutoDock] = useState(phone.policy?.autoDock !== false)
   const [enrolOpen, setEnrolOpen] = useState(false)
 
   const hasCompanion = Boolean(phone.companion)
-  const model = phone.person?.name ?? 'this phone'
+  const model = phone.person?.deviceName ?? phone.person?.name ?? 'this phone'
 
   const save = () => {
     const trimmed = name.trim()

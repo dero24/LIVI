@@ -6,13 +6,14 @@
 // since the hub only owns a handful of keys (SETTINGS_ALLOWLIST in
 // hubd/hubd/intents.py). Every write goes through `window.hub.intent` so hubd
 // remains the single mutation path (D7).
-import { Box, Button, Divider, Drawer, IconButton, Typography } from '@mui/material'
+import { Box, Button, Divider, Drawer, IconButton, MenuItem, Select, Typography } from '@mui/material'
 import SettingsIcon from '@mui/icons-material/Settings'
 import CloseIcon from '@mui/icons-material/Close'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import TuneIcon from '@mui/icons-material/Tune'
 import WifiIcon from '@mui/icons-material/Wifi'
 import { type ReactNode, useEffect, useState } from 'react'
+import { useLiviStore } from '@store/store'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
 import { isCalibrated, LANDING_TILES } from './Landing'
@@ -93,6 +94,11 @@ export function SettingsPanel({
   const [netErr, setNetErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  // [hub] Fix 4 / work-log 27: audio device selection
+  const liviSettings = useLiviStore((s) => s.settings)
+  const [audioDevices, setAudioDevices] = useState<{ sinks: { id: string; name: string }[]; sources: { id: string; name: string }[] } | null>(null)
+  const audioOutput = liviSettings?.audioOutputDevice ?? ''
+  const audioInput = liviSettings?.audioInputDevice ?? ''
 
   // Fetch network/service status from the hearth-recovery server (read-only
   // /status needs no token). It runs on the Pi at localhost:8125.
@@ -108,6 +114,20 @@ export function SettingsPanel({
     return () => {
       cancelled = true
     }
+  }, [open])
+
+  // [hub] Fix 4 / work-log 27: fetch audio devices from hubd
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    fetch('http://localhost:8123/audio-devices', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: { sinks: { id: string; name: string }[]; sources: { id: string; name: string }[] }) => {
+        if (cancelled) return
+        setAudioDevices(d)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [open])
 
   const run = async (key: string, fn: () => void) => {
@@ -257,6 +277,62 @@ export function SettingsPanel({
           )}
         </Box>
       )}
+
+      <SectionTitle>Audio</SectionTitle>
+      <Box sx={{ padding: '0.5rem 0' }}>
+        <Typography sx={{ fontSize: '0.8rem', fontWeight: 500, marginBottom: '0.25rem' }}>Output device</Typography>
+        <Select
+          size="small"
+          fullWidth
+          value={audioOutput}
+          displayEmpty
+          onChange={(e) => {
+            const v = e.target.value
+            intent({ type: 'settings.set', settings: { audioOutputDevice: v } })
+            setMsg('Audio output changed — restart LIVI to apply')
+          }}
+          sx={{
+            color: t.text,
+            '& .MuiSelect-icon': { color: t.text },
+            '& .MuiOutlinedInput-notchedOutline': { borderColor: t.border }
+          }}
+        >
+          <MenuItem value=""><em>System default</em></MenuItem>
+          {audioDevices?.sinks.map((s) => (
+            <MenuItem key={s.id} value={s.id} sx={{ fontSize: '0.75rem' }}>{s.name}</MenuItem>
+          ))}
+        </Select>
+        <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', marginTop: '0.15rem' }}>
+          Ringtone and call audio play through this device.
+        </Typography>
+      </Box>
+      <Box sx={{ padding: '0.5rem 0' }}>
+        <Typography sx={{ fontSize: '0.8rem', fontWeight: 500, marginBottom: '0.25rem' }}>Input device</Typography>
+        <Select
+          size="small"
+          fullWidth
+          value={audioInput}
+          displayEmpty
+          onChange={(e) => {
+            const v = e.target.value
+            intent({ type: 'settings.set', settings: { audioInputDevice: v } })
+            setMsg('Audio input changed — restart LIVI to apply')
+          }}
+          sx={{
+            color: t.text,
+            '& .MuiSelect-icon': { color: t.text },
+            '& .MuiOutlinedInput-notchedOutline': { borderColor: t.border }
+          }}
+        >
+          <MenuItem value=""><em>System default</em></MenuItem>
+          {audioDevices?.sources.map((s) => (
+            <MenuItem key={s.id} value={s.id} sx={{ fontSize: '0.75rem' }}>{s.name}</MenuItem>
+          ))}
+        </Select>
+        <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', marginTop: '0.15rem' }}>
+          Microphone for hub-side call audio.
+        </Typography>
+      </Box>
 
       <SectionTitle>System</SectionTitle>
       <Row

@@ -5,7 +5,8 @@
 export type PresenceLevel = 'absent' | 'nearby' | 'present' | 'docked' | 'projecting'
 
 export interface HubPerson {
-  name?: string
+  name?: string | null
+  deviceName?: string | null
   colour?: string
   isPrimary?: boolean
   avatar?: string

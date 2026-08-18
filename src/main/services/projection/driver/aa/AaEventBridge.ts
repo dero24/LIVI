@@ -119,6 +119,10 @@ export class AaEventBridge {
   private clusterFocusEmitted = false
   // [hub] Phase 2.1: previous aggregate call state, to emit only on transitions.
   callAggregateState: 'idle' | 'ringing' | 'active' = 'idle'
+  // [hub] Fix 4 (work-log 27): caller info from the latest phone-call-state event,
+  // read by ProjectionAudio's getCallContext to thread into the callState payload.
+  callerName: string | undefined = undefined
+  callerNumber: string | undefined = undefined
 
   constructor(
     private readonly aa: AAStack,
@@ -143,6 +147,8 @@ export class AaEventBridge {
       this.naviActive = false
       this.naviApp = undefined
       this.callAggregateState = 'idle' // [hub] Phase 2.1: reset on disconnect
+      this.callerName = undefined // [hub] Fix 4: reset caller info
+      this.callerNumber = undefined
 
       if (this.videoFocusEmitted) {
         this.emitCommand(CommandMapping.releaseVideoFocus)
@@ -238,21 +244,28 @@ export class AaEventBridge {
     // are the commands ProjectionAudio watches to emit callState (§9.2 Tier 2).
     // Mirrors CarPlay's CpSession.ts call-phase emission. We track the previous
     // state here so only transitions produce a command.
-    aa.on('phone-call-state', (state: 'idle' | 'ringing' | 'active') => {
-      const prev = this.callAggregateState
-      this.callAggregateState = state
-      if (state === prev) return
-      const cmd =
-        state === 'ringing'
-          ? AudioCommand.AudioAttentionRinging
-          : state === 'active'
-            ? AudioCommand.AudioPhonecallStart
-            : AudioCommand.AudioPhonecallStop
-      console.log(
-        `[ring-trace] AaEventBridge: phone-call-state ${prev}→${state} → AudioCommand=${AudioCommand[cmd]}`
-      )
-      deps.emitMessage(buildAudioCommandMessage('phone', cmd) as Message)
-    })
+    // [hub] Fix 4 (work-log 27): also capture callerName/callerNumber from the
+    // event so ProjectionAudio can thread them into the callState payload.
+    aa.on(
+      'phone-call-state',
+      (state: 'idle' | 'ringing' | 'active', callerName?: string, callerNumber?: string) => {
+        const prev = this.callAggregateState
+        this.callAggregateState = state
+        this.callerName = callerName
+        this.callerNumber = callerNumber
+        if (state === prev) return
+        const cmd =
+          state === 'ringing'
+            ? AudioCommand.AudioAttentionRinging
+            : state === 'active'
+              ? AudioCommand.AudioPhonecallStart
+              : AudioCommand.AudioPhonecallStop
+        console.log(
+          `[ring-trace] AaEventBridge: phone-call-state ${prev}→${state} → AudioCommand=${AudioCommand[cmd]}`
+        )
+        deps.emitMessage(buildAudioCommandMessage('phone', cmd) as Message)
+      }
+    )
 
     aa.on('mic-start', () => deps.startMic('mic-start'))
     aa.on('mic-stop', () => deps.stopMic('mic-stop'))

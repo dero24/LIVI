@@ -125,12 +125,16 @@ export type ProjectionEvent =
   // [hub] M1: first-class call lifecycle event carrying phase AND device identity.
   // Unlike `attention`, this has an 'active' phase and attributes the call to a
   // specific projection session (§3.6, §9 Tier 2). `attention` is left untouched.
+  // [hub] Fix 4 (work-log 27): callerName/callerNumber threaded from
+  // PhoneStatus.calls[] so the ring banner can show caller identity.
   | {
       type: 'callState'
       payload: {
         phase: 'incoming' | 'active' | 'ended'
         sessionIndex: number | null
         aliases?: SessionDeviceIds
+        callerName?: string | null
+        callerNumber?: string | null
         at: string
       }
     }

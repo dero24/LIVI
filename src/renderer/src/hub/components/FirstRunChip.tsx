@@ -15,14 +15,19 @@ export interface FirstRunChipProps {
   onEnrolStart?: (phoneId: string) => Promise<{ code?: string } | void> | void
 }
 
-// Heuristic: a phone is "unnamed" if person.name is missing or matches the
-// model default pattern (a single token like "Pixel 8"). The hub is the
-// authority, but this avoids a flicker on first dock.
+// Heuristic: a phone is "unnamed" if person.name is missing, empty, or matches
+// a generic device/platform name. The hub authority (registry.py) now stores
+// LIVI's device model as person.deviceName, not person.name, so person.name
+// should be null until the user names it. This check is a safety net for any
+// pre-existing records that still have a device name in person.name.
+const GENERIC_NAMES = new Set([
+  'android', 'phone', 'device', 'unknown', 'carplay', 'ios'
+])
 function isUnnamed(p: HubPhone): boolean {
   const name = p.person?.name
-  if (!name) return true
-  // A person's name usually has a capitalised first word and no digits; a model
-  // name often has digits (Pixel 8, SM-S908U) or all-caps tokens.
+  if (!name || !name.trim()) return true
+  if (GENERIC_NAMES.has(name.trim().toLowerCase())) return true
+  // Model numbers: SM-S908U, Pixel 8, iPhone 15 Pro — has digits or all-caps
   return /\d/.test(name) || /^[A-Z]{2,}/.test(name)
 }
 

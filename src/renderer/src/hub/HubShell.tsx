@@ -177,6 +177,23 @@ export function HubShell() {
     return () => clearTimeout(id)
   }, [anyProjecting])
 
+  // [hub] ring-trace (work-log 27 Bug C): when a ring arrives, log the values
+  // that feed the transparency condition so we can tell whether the black
+  // banner is caused by projectingStable being false (opaque shell hides AA
+  // video) or by the RingBanner's own 0.5 black overlay over a dark AA screen.
+  // Re-fires on projectingStable/viewMode/anyProjecting transitions so we see
+  // the state evolve while the ring is up.
+  useEffect(() => {
+    if (!ring) return
+    console.log(
+      `[ring-trace] HubShell: ring=%o projectingStable=%s viewMode=%s anyProjecting=%s`,
+      ring,
+      projectingStable,
+      viewMode,
+      anyProjecting
+    )
+  }, [ring, projectingStable, viewMode, anyProjecting])
+
   // [hub] §12.4: tapping a phone bubble selects it (asks LIVI to make it the
   // active session) AND, if it is the phone currently projecting, returns to
   // the landing page so the user can pick an app. Tapping a non-projecting
@@ -445,9 +462,16 @@ export function HubShell() {
         // [hub] §12.2: transparent when in AA mode OR calibrating (AA dashboard
         // must be visible through the semi-transparent overlay). During landing
         // and screensaver, opaque covers the AA video.
+        // [hub] Fix 1 (work-log 27): also transparent when a ring is active and a
+        // phone is projecting, so the AA video + AA's native call UI show through
+        // behind the RingBanner. Otherwise the opaque t.bg hides the AA video and
+        // the user sees a black screen with the banner card on top.
         // Uses the latched `projectingStable` so a presence blip cannot flash
         // an opaque background over the video mid-touch.
-        backgroundColor: projectingStable && viewMode !== 'screensaver' ? 'transparent' : t.bg,
+        backgroundColor:
+          projectingStable && (viewMode !== 'screensaver' || !!ring)
+            ? 'transparent'
+            : t.bg,
         color: t.text,
         overflow: 'hidden'
         // pointer-events is intentionally NOT set here: the CSS rule
@@ -498,8 +522,10 @@ export function HubShell() {
         <HealthDot healthy={healthy} stale={stale} />
       </Box>
 
-      {/* [hub] Phase 1.10: Screensaver mode — clock + date + bubbles (opaque) */}
-      {viewMode === 'screensaver' && (
+      {/* [hub] Phase 1.10: Screensaver mode — clock + date + bubbles (opaque).
+          [hub] Fix 1 (work-log 27): hidden when a ring is active so the AA video
+          and native call UI show through behind the RingBanner. */}
+      {viewMode === 'screensaver' && !ring && (
         <Screensaver
           message={connecting ? 'Connecting to the hub…' : phones.length === 0 ? 'Dock a phone to begin' : undefined}
           subtitle={
@@ -514,8 +540,10 @@ export function HubShell() {
 
       {/* [hub] Phase 1.10: Landing / AA mode — bar + content.
           Bar hidden during calibration so the full AA dashboard is visible
-          through the CalibrationOverlay. */}
-      {viewMode !== 'screensaver' && !calibrating && (
+          through the CalibrationOverlay.
+          [hub] Fix 1 (work-log 27): bar also hidden during a ring so the AA
+          video + native call UI show through behind the RingBanner. */}
+      {viewMode !== 'screensaver' && !calibrating && !ring && (
         <>
           {/* [hub] §12.6: the bar is a view-area inset. It contains:
               - Clock + date (top line, large)

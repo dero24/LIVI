@@ -360,19 +360,31 @@ export class Session extends EventEmitter {
   // [hub] Phase 2.1: derive an aggregate call state from PhoneStatus.calls[].
   // phone_state enum (PhoneStatus.proto): UNKNOWN=0, IN_CALL=1, ON_HOLD=2,
   // INACTIVE=3, INCOMING=4, CONFERENCED=5, MUTED=6.
-  private _aggregateCallState(calls: { phone_state?: number }[]): 'idle' | 'ringing' | 'active' {
+  // [hub] Fix 4 (work-log 27): also extract caller info (callerId/callerNumber)
+  // from the first ringing call so it can be threaded through the chain.
+  private _aggregateCallState(
+    calls: { phone_state?: number; phoneState?: number; callerId?: string; callerNumber?: string }[]
+  ): { state: 'idle' | 'ringing' | 'active'; callerName?: string; callerNumber?: string } {
     let ringing = false
     let active = false
+    let callerName: string | undefined
+    let callerNumber: string | undefined
     for (const c of calls) {
-      const s = c.phone_state ?? 0
-      if (s === 4)
+      // [hub] Tier 2 fix: the proto defines `phone_state` (snake_case) but the JS
+      // protobuf decoder emits `phoneState` (camelCase). Read both so the call
+      // state is detected regardless of which field name the decoder produces.
+      const s = c.phone_state ?? c.phoneState ?? 0
+      if (s === 4) {
         ringing = true // INCOMING
-      else if (s === 1 || s === 5 || s === 6) active = true // IN_CALL | CONFERENCED | MUTED
+        // [hub] Fix 4: capture caller info from the ringing call
+        if (!callerName && c.callerId) callerName = c.callerId
+        if (!callerNumber && c.callerNumber) callerNumber = c.callerNumber
+      } else if (s === 1 || s === 5 || s === 6) active = true // IN_CALL | CONFERENCED | MUTED
       // ON_HOLD(2), INACTIVE(3), UNKNOWN(0) → neither
     }
-    if (ringing) return 'ringing'
-    if (active) return 'active'
-    return 'idle'
+    if (ringing) return { state: 'ringing', callerName, callerNumber }
+    if (active) return { state: 'active' }
+    return { state: 'idle' }
   }
 
   private _handleDecryptedMessage(
@@ -508,11 +520,18 @@ export class Session extends EventEmitter {
             if (calls.length > 0) {
               console.log(`[ring-trace] Session: PhoneStatus.calls=${JSON.stringify(calls)}`)
             }
-            const aggregate = this._aggregateCallState(calls as { phone_state?: number }[])
-            if (aggregate !== this._lastCallAggregate) {
-              this._lastCallAggregate = aggregate
-              this.emit('phone-call-state', aggregate)
-              console.log(`[ring-trace] Session: phone-call-state → ${aggregate}`)
+            const agg = this._aggregateCallState(
+              calls as { phone_state?: number; phoneState?: number; callerId?: string; callerNumber?: string }[]
+            )
+            if (agg.state !== this._lastCallAggregate) {
+              this._lastCallAggregate = agg.state
+              // [hub] Fix 4 (work-log 27): include caller info in the event
+              this.emit('phone-call-state', agg.state, agg.callerName, agg.callerNumber)
+              console.log(
+                `[ring-trace] Session: phone-call-state → ${agg.state}` +
+                  (agg.callerName ? ` caller=${agg.callerName}` : '') +
+                  (agg.callerNumber ? ` number=${agg.callerNumber}` : '')
+              )
             }
           } else if (!this._ringTraceNoCalls) {
             // [hub] ring-trace: the message decoded but has NO calls field. Dump

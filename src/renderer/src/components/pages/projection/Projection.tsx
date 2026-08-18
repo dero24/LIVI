@@ -245,6 +245,15 @@ const CarplayComponent: React.FC<CarplayProps> = ({
     (p: AttentionPayload) => {
       const inProjection = location.pathname === '/'
 
+      // [hub] In hub mode (/hub route), the RingBanner IS the call UI — it lives
+      // on HubShell. Navigating to '/' (LIVI's projection route) unmounts
+      // HubShell and the RingBanner, leaving the user on a black screen or
+      // LIVI's own home page (which they must never see). The AA video continues
+      // to show behind the transparent HubShell, so there is no reason to
+      // switch routes. This early-return prevents the call/voiceAssistant
+      // attention switch from hijacking the hub surface. (work-log 29)
+      if (location.pathname === ROUTES.HUB) return
+
       if (p.kind !== 'call' && p.kind !== 'voiceAssistant') return
 
       // ACTIVE: switch to projection

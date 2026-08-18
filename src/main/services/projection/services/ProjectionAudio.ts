@@ -29,7 +29,14 @@ type SendChunked = (
 type SendMicPcm = (pcm: Int16Array, decodeType: number) => void
 
 // [hub] M1: identity of the session a call belongs to, resolved lazily at emit time.
-type GetCallContext = () => { sessionIndex: number | null; aliases?: SessionDeviceIds }
+// [hub] Fix 4 (work-log 27): callerName/callerNumber added so the callState
+// event can carry caller identity threaded from Session → AaEventBridge.
+type GetCallContext = () => {
+  sessionIndex: number | null
+  aliases?: SessionDeviceIds
+  callerName?: string
+  callerNumber?: string
+}
 
 export class ProjectionAudio {
   // One AudioOutput per (sampleRate, channels). The OS audio sink (PulseAudio
@@ -77,6 +84,9 @@ export class ProjectionAudio {
 
   // Music ducking target while nav is active (20%)
   private readonly navDuckingTarget = 0.2
+  // [hub] Fix 3 (work-log 27): duck music during ringtone so both aren't at full
+  private readonly ringDuckingTarget = 0.15
+  private ringDuckingActive = false
 
   // Debounce time after nav stop before ramping music back to 1.0
   private readonly navResumeDelayMs = 1500
@@ -137,10 +147,19 @@ export class ProjectionAudio {
     const ctx = this.getCallContext?.()
     // [hub] ring-trace (Stage 0.1): the emit point. A null sessionIndex here means
     // hubd cannot correlate the call to a phoneId and will drop it (§9.2).
+    // [hub] ring-trace (work-log 27 Bug D): log the caller identity threaded
+    // through getCallContext. If callerName/callerNumber are null here, the break
+    // is upstream (AaSession.callerInfo or the getCallContext closure).
     console.log(
       `[ring-trace] ProjectionAudio: callState phase=${phase} sessionIndex=${
         ctx?.sessionIndex ?? 'null'
       }`
+    )
+    console.log(
+      `[ring-trace] emitCallState: callerName=%s callerNumber=%s aliases=%o`,
+      ctx?.callerName ?? 'null',
+      ctx?.callerNumber ?? 'null',
+      ctx?.aliases ?? 'null'
     )
     this.sendProjectionEvent({
       type: 'callState',
@@ -148,6 +167,9 @@ export class ProjectionAudio {
         phase,
         sessionIndex: ctx?.sessionIndex ?? null,
         aliases: ctx?.aliases,
+        // [hub] Fix 4 (work-log 27): thread caller identity to hubd
+        callerName: ctx?.callerName ?? null,
+        callerNumber: ctx?.callerNumber ?? null,
         at: new Date().toISOString()
       }
     })
@@ -274,6 +296,43 @@ export class ProjectionAudio {
     }
 
     this.volumes[stream] = v
+  }
+
+  // [hub] Fix 3 (work-log 27): duck/unduck media audio during ringtone so the
+  // ringtone is audible without competing with AA music at full volume.
+  private duckMediaForRing(duck: boolean): void {
+    // [hub] ring-trace (work-log 27 Bug B): confirm duckMediaForRing fires and
+    // capture the media/voice/phonecall state it sees. The audio processing loop
+    // only consults navActive when choosing the fade target, so a ring duck may
+    // be overwritten on the next chunk — this trace proves whether the call
+    // reached here and whether the guard condition passed.
+    console.log(
+      `[ring-trace] duckMediaForRing: duck=%s mediaActive=%s voiceAssistantActive=%s phonecallActive=%s ringDuckingActive=%s navActive=%s musicFadeTarget=%s`,
+      duck,
+      this.mediaActive,
+      this.voiceAssistantActive,
+      this.phonecallActive,
+      this.ringDuckingActive,
+      this.navActive,
+      this.musicFade.target
+    )
+    if (duck === this.ringDuckingActive) return
+    this.ringDuckingActive = duck
+    if (duck) {
+      // Duck music to the ring ducking target (same ramp mechanism as nav)
+      if (this.mediaActive && !this.voiceAssistantActive && !this.phonecallActive) {
+        this.musicRampActive = true
+        this.musicFade.target = this.ringDuckingTarget
+        this.musicFade.remainingSamples = 0
+      }
+    } else {
+      // Restore music to full (or nav ducking target if nav is active)
+      if (this.mediaActive && !this.voiceAssistantActive && !this.phonecallActive) {
+        this.musicRampActive = true
+        this.musicFade.target = this.navActive ? this.navDuckingTarget : 1
+        this.musicFade.remainingSamples = 0
+      }
+    }
   }
 
   private getRampMsForTransition(from: number, to: number): number {
@@ -492,6 +551,8 @@ export class ProjectionAudio {
           this.emitAttention('call', true, { phase: 'incoming' })
         }
         this.emitCallState('incoming') // [hub] M1
+        // [hub] Fix 3 (work-log 27): duck media audio during ringtone
+        this.duckMediaForRing(true)
       }
 
       if (cmd === AudioCommand.AudioPhonecallStop) {
@@ -499,6 +560,8 @@ export class ProjectionAudio {
           this.uiCallIncoming = false
           this.emitAttention('call', false, { phase: 'ended' })
         }
+        // [hub] Fix 3 (work-log 27): restore media audio when call ends
+        this.duckMediaForRing(false)
       }
 
       if (cmd === AudioCommand.AudioVoiceAssistantStart) {
@@ -704,6 +767,8 @@ export class ProjectionAudio {
           this.phonecallActive = true
           this.voiceAssistantActive = false
           this.emitCallState('active') // [hub] M1
+          // [hub] Fix 3 (work-log 27): call answered — clear ring ducking flag
+          this.ringDuckingActive = false
         }
 
         // While voice is active, keep music muted via gate.

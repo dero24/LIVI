@@ -1272,9 +1272,31 @@ export class ProjectionService {
         this.driver.sendPhoneAudio?.(pcm, decodeType)
       },
       // [hub] M1: attribute callState to the active session (stable index + aliases).
+      // [hub] Fix 4 (work-log 27): also thread callerName/callerNumber from the
+      // AaEventBridge so hubd can populate the ring banner with caller identity.
       () => {
         const a = this.sessions.active()
-        return { sessionIndex: a?.index ?? null, aliases: a?.device }
+        const aa = a?.protocol === 'androidauto' ? (a.driver as AaSession) : null
+        const callerName = aa?.callerInfo.name
+        const callerNumber = aa?.callerInfo.number
+        // [hub] ring-trace (work-log 27 Bug D): if aa is null the active session
+        // is not AA (or a.driver is not an AaSession), and callerInfo is lost.
+        // If aa is set but callerName/Number are undefined, the break is in
+        // AaSession.callerInfo (see its own trace).
+        console.log(
+          `[ring-trace] getCallContext: aa=%s protocol=%s sessionIndex=%s callerName=%s callerNumber=%s`,
+          aa ? 'set' : 'null',
+          a?.protocol ?? 'null',
+          a?.index ?? 'null',
+          callerName ?? 'null',
+          callerNumber ?? 'null'
+        )
+        return {
+          sessionIndex: a?.index ?? null,
+          aliases: a?.device,
+          callerName,
+          callerNumber
+        }
       }
     )
 
