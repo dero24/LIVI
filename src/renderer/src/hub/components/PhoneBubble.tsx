@@ -59,8 +59,8 @@ export function PhoneBubble({ phone, onSelect, size = 'default' }: PhoneBubblePr
   const large = size === 'large'
 
   // Sizes — fluid, responsive to viewport (§12.1)
-  const avatarSize = large ? 'clamp(3.5rem, 12vmin, 6rem)' : 'clamp(2.5rem, 7vmin, 3.5rem)'
-  const ringWidth = large ? '3px' : '2px'
+  const avatarSize = large ? 'clamp(4.5rem, 14vmin, 7rem)' : 'clamp(3.5rem, 10vmin, 5rem)'
+  const ringWidth = large ? '4px' : '3px'
 
   return (
     <Box
@@ -73,9 +73,9 @@ export function PhoneBubble({ phone, onSelect, size = 'default' }: PhoneBubblePr
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        gap: large ? '0.45rem' : '0.3rem',
-        minWidth: large ? '5.5rem' : '4rem',
-        padding: large ? '0.6rem' : '0.4rem',
+        gap: large ? '0.5rem' : '0.4rem',
+        minWidth: large ? '6.5rem' : '5rem',
+        padding: large ? '0.7rem' : '0.5rem',
         opacity: dimmed ? 0.4 : 1,
         cursor: onSelect ? 'pointer' : 'default',
         transition: 'opacity 300ms ease, transform 200ms cubic-bezier(0.16,1,0.3,1)',
@@ -167,7 +167,7 @@ export function PhoneBubble({ phone, onSelect, size = 'default' }: PhoneBubblePr
           <Typography
             component="span"
             sx={{
-              fontSize: large ? 'clamp(1.4rem, 4.5vmin, 2.2rem)' : 'clamp(0.95rem, 3vmin, 1.4rem)',
+              fontSize: large ? 'clamp(1.6rem, 5vmin, 2.6rem)' : 'clamp(1.2rem, 4vmin, 1.8rem)',
               fontWeight: 700,
               textShadow: '0 1px 3px rgba(0,0,0,0.3)',
               userSelect: 'none',
@@ -228,7 +228,7 @@ export function PhoneBubble({ phone, onSelect, size = 'default' }: PhoneBubblePr
         component="span"
         sx={{
           color: needsNaming ? t.textMuted : t.text,
-          fontSize: large ? 'clamp(0.9rem, 2.8vmin, 1.2rem)' : 'clamp(0.75rem, 2vmin, 0.95rem)',
+          fontSize: large ? 'clamp(1rem, 3.2vmin, 1.4rem)' : 'clamp(0.85rem, 2.5vmin, 1.1rem)',
           lineHeight: 1.1,
           fontWeight: large ? 600 : 500,
           textAlign: 'center',

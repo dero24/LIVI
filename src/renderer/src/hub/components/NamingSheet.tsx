@@ -1,14 +1,14 @@
 // [hub] G2 / §6.2 — the naming sheet. The phone is fully functional before it
-// is named; naming is an invitation, not a gate. This sheet opens from the
-// "Whose phone is this?" chip, takes a name once, and posts phone.rename.
-// Also offers the per-phone "don't auto-take the screen" toggle (R1) and, when
-// the phone has no companion, the "also reach this phone when it's not docked"
-// line that opens EnrolSheet.
-import { Box, Button, Modal, Switch, TextField, Typography } from '@mui/material'
+// is named; naming is an invitation, not a gate. This sheet opens automatically
+// when a phone has no name, takes a name once, and posts phone.rename.
+// When the phone has no companion, it also offers the "also reach this phone
+// when it's not docked" line that opens EnrolSheet.
+import { Box, Button, Modal, TextField, Typography } from '@mui/material'
 import { useState } from 'react'
 import type { HubPhone } from '../types'
 import { useHubTokens } from '../useHubTokens'
 import { EnrolSheet } from './EnrolSheet'
+import { TouchKeyboard } from './TouchKeyboard'
 
 export interface NamingSheetProps {
   phone: HubPhone
@@ -24,12 +24,10 @@ export function NamingSheet({
   open,
   onClose,
   onRename,
-  onSetAutoDock,
   onEnrolStart
 }: NamingSheetProps) {
   const t = useHubTokens()
   const [name, setName] = useState('')
-  const [autoDock, setAutoDock] = useState(phone.policy?.autoDock !== false)
   const [enrolOpen, setEnrolOpen] = useState(false)
 
   const hasCompanion = Boolean(phone.companion)
@@ -38,7 +36,6 @@ export function NamingSheet({
   const save = () => {
     const trimmed = name.trim()
     if (trimmed) onRename(phone.phoneId, trimmed)
-    onSetAutoDock?.(phone.phoneId, autoDock)
     onClose()
   }
 
@@ -70,26 +67,24 @@ export function NamingSheet({
             {model} · name it once so the hub can tell it apart.
           </Typography>
           <TextField
-            autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Sarah"
+            placeholder="Tap letters to type a name"
             slotProps={{ htmlInput: { 'data-testid': 'hub-naming-input', maxLength: 40 } }}
-            sx={{ '& .MuiInputBase-input': { color: t.text } }}
+            sx={{
+              '& .MuiInputBase-input': { color: t.text, fontSize: '1.2rem', textAlign: 'center' },
+              '& .MuiOutlinedInput-root': {
+                backgroundColor: t.surfaceMuted,
+                '& fieldset': { borderColor: t.border }
+              }
+            }}
+            inputRef={(el) => { if (el && open) el.blur() }}
           />
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Box>
-              <Typography sx={{ fontSize: '0.95rem' }}>Auto-take the screen when docked</Typography>
-              <Typography sx={{ color: t.textMuted, fontSize: '0.8rem' }}>
-                Off = show a bubble, wait for a tap (good for shared phones)
-              </Typography>
-            </Box>
-            <Switch
-              checked={autoDock}
-              onChange={(_, v) => setAutoDock(v)}
-              data-testid="hub-naming-autodock"
-            />
-          </Box>
+          <TouchKeyboard
+            onKey={(ch) => setName((prev) => prev + ch)}
+            onBackspace={() => setName((prev) => prev.slice(0, -1))}
+            onEnter={save}
+          />
           {!hasCompanion && (
             <Button
               variant="text"

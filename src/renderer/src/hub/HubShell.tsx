@@ -14,7 +14,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import SettingsIcon from '@mui/icons-material/Settings'
 import { useLiviStore } from '@store/store'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FirstRunChip } from './components/FirstRunChip'
+import { NamingSheet } from './components/NamingSheet'
 import { HealthDot } from './components/HealthDot'
 import {
   Landing,
@@ -91,7 +91,25 @@ export function HubShell() {
   const [calibrationApp, setCalibrationApp] = useState<string | null>(null)
   const [navigating, setNavigating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // [hub] Auto-open naming sheet for unnamed phones (replaces FirstRunChip).
+  // When a phone has no person.name, the NamingSheet opens automatically so
+  // the user can name it immediately — no chip to tap. Once dismissed with
+  // "Later", it won't re-open for that phone until the phone is forgotten
+  // and re-discovered (new phoneId).
+  const [namingPhone, setNamingPhone] = useState<HubPhone | null>(null)
+  const [namingDismissed, setNamingDismissed] = useState<Set<string>>(new Set())
   const projectingPhone = phones.find((p) => p.presence.level === 'projecting') ?? null
+
+  useEffect(() => {
+    if (namingPhone || settingsOpen) return
+    const unnamed = phones.find((p) => {
+      if (namingDismissed.has(p.phoneId)) return false
+      const name = p.person?.name
+      if (!name || !name.trim()) return true
+      return /android|phone|device|unknown|carplay|ios/i.test(name.trim())
+    })
+    if (unnamed) setNamingPhone(unnamed)
+  }, [phones, namingPhone, settingsOpen, namingDismissed])
 
   // [hub] Touch coordinate transform for calibration recording + replay.
   // The AA video is letterboxed inside a 16:9 tier and offset by the bar
@@ -642,16 +660,22 @@ export function HubShell() {
         </>
       )}
 
-      {/* [hub] G2 / §6.2: the first-run naming + enrollment chip, shown once
-          per unnamed/companion-less phone. Naming is an invitation, not a gate. */}
-      {phones.length > 0 && (
+      {/* [hub] G2 / §6.2: auto-open naming sheet for unnamed phones. Replaces
+          the FirstRunChip — the user gets prompted with a keyboard immediately
+          when a phone has no name, instead of having to tap a chip. */}
+      {namingPhone && (
         <Box className="hub-interactive" sx={{ pointerEvents: 'auto' }}>
-          <FirstRunChip
-            phone={phones[0]}
-            onRename={(phoneId, name) => intent({ type: 'phone.rename', phoneId, name })}
-            onSetAutoDock={(phoneId, autoDock) =>
-              intent({ type: 'phone.policy', phoneId, policy: { autoDock } })
-            }
+          <NamingSheet
+            phone={namingPhone}
+            open
+            onClose={() => {
+              setNamingDismissed((prev) => new Set(prev).add(namingPhone.phoneId))
+              setNamingPhone(null)
+            }}
+            onRename={(phoneId, name) => {
+              intent({ type: 'phone.rename', phoneId, name })
+              setNamingPhone(null)
+            }}
             onEnrolStart={async (phoneId) => {
               await intent({ type: 'phone.enrolStart', phoneId })
             }}
