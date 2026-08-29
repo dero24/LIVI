@@ -545,5 +545,27 @@ describe('AaEventBridge', () => {
       expect(cmds[1].command).toBe(4) // active (answered)
       expect(cmds[2].command).toBe(5) // ended
     })
+
+    // [hub] Fix Bug D (work-log 36): callerName/callerNumber from the
+    // phone-call-state event are stored on the bridge so AaSession.callerInfo
+    // (read by ProjectionService.getCallContext) can thread them to hubd.
+    test('stores callerName/callerNumber from the event', () => {
+      const { aa, bridge } = makeBridge()
+      bridge.callAggregateState = 'idle'
+      aa.emit('phone-call-state', 'ringing', 'Not Spam Risk', '+1 501-335-2744')
+      expect(bridge.callerName).toBe('Not Spam Risk')
+      expect(bridge.callerNumber).toBe('+1 501-335-2744')
+    })
+
+    test('updates caller info on every event, even when state is unchanged', () => {
+      const { aa, bridge } = makeBridge()
+      bridge.callAggregateState = 'ringing'
+      bridge.callerName = 'Old Name'
+      bridge.callerNumber = '+1 111'
+      // Same state → no AudioCommand, but caller info must still refresh.
+      aa.emit('phone-call-state', 'ringing', 'New Name', '+1 222')
+      expect(bridge.callerName).toBe('New Name')
+      expect(bridge.callerNumber).toBe('+1 222')
+    })
   })
 })

@@ -113,8 +113,14 @@ export class AAStack extends EventEmitter {
     // [hub] Phase 2.1: aggregate call state from PhoneStatus → AaEventBridge
     // produces the AudioAttentionRinging/PhonecallStart/Stop commands that fire
     // callState (§9.2 Tier 2).
-    session.on('phone-call-state', (state: 'idle' | 'ringing' | 'active') =>
-      this.emit('phone-call-state', state)
+    // [hub] Fix Bug D (work-log 36): forward callerName/callerNumber too. The
+    // Session emits all three args, but the previous re-emit dropped the caller
+    // identity, so AaEventBridge (and thus AaSession.callerInfo → getCallContext
+    // → hubd) always saw undefined caller info and the RingBanner showed no name.
+    session.on(
+      'phone-call-state',
+      (state: 'idle' | 'ringing' | 'active', callerName?: string, callerNumber?: string) =>
+        this.emit('phone-call-state', state, callerName, callerNumber)
     )
     session.on('video-focus-projected', () => this.emit('video-focus-projected'))
     session.on('cluster-video-focus-projected', () => this.emit('cluster-video-focus-projected'))

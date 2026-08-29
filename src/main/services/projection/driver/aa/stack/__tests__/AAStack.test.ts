@@ -178,6 +178,26 @@ describe('AAStack — event forwarding', () => {
     expect(onError).toHaveBeenCalled()
   })
 
+  // [hub] Fix Bug D (work-log 36): phone-call-state must forward callerName and
+  // callerNumber, not just state. The Session emits all three; the AAStack re-emit
+  // previously dropped the caller identity so hubd's RingBanner showed no caller.
+  test('phone-call-state forwards state + callerName + callerNumber', () => {
+    const { session, stack } = setup()
+    const onCall = vi.fn()
+    stack.on('phone-call-state', onCall)
+    session.emit('phone-call-state', 'ringing', 'Not Spam Risk', '+1 501-335-2744')
+    expect(onCall).toHaveBeenCalledTimes(1)
+    expect(onCall).toHaveBeenCalledWith('ringing', 'Not Spam Risk', '+1 501-335-2744')
+  })
+
+  test('phone-call-state forwards undefined caller info when absent', () => {
+    const { session, stack } = setup()
+    const onCall = vi.fn()
+    stack.on('phone-call-state', onCall)
+    session.emit('phone-call-state', 'active')
+    expect(onCall).toHaveBeenCalledWith('active', undefined, undefined)
+  })
+
   test('server "error" is forwarded', () => {
     const stack = new AAStack(baseCfg())
     const server = (stack as unknown as { _server: MockTcpServer })._server
