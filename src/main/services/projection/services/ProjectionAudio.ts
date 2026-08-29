@@ -85,8 +85,17 @@ export class ProjectionAudio {
   // Music ducking target while nav is active (20%)
   private readonly navDuckingTarget = 0.2
   // [hub] Fix 3 (work-log 27): duck music during ringtone so both aren't at full
-  private readonly ringDuckingTarget = 0.15
+  // [hub] work-log 37: changed from 0.15 (duck to 15%) to 0 (fully mute) — the
+  // ringtone should play by itself with no music underneath it.
+  private readonly ringDuckingTarget = 0
   private ringDuckingActive = false
+  // [hub] work-log 38/39: safety-net timeout — if the phone doesn't send a
+  // PhoneStatus update after a call ends (common when declining on the phone
+  // side), ring ducking would stay active forever, permanently muting music.
+  // This timer auto-clears ring ducking. 15s is enough for the longest
+  // realistic ring; AudioMediaStart also clears it (work-log 39).
+  private ringDuckTimeoutTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly ringDuckTimeoutMs = 15000
 
   // Debounce time after nav stop before ramping music back to 1.0
   private readonly navResumeDelayMs = 1500
@@ -234,6 +243,9 @@ export class ProjectionAudio {
     this.uiVoiceAssistantHintActive = false
     this.uiNavHintActive = false
     this.callStatePhase = null // [hub] M1
+    // [hub] work-log 38: clear stuck ring ducking on session reset
+    this.ringDuckingActive = false
+    this.clearRingDuckTimeout()
   }
 
   // Called from ProjectionService when a projection session stops
@@ -270,6 +282,9 @@ export class ProjectionAudio {
     this.uiVoiceAssistantHintActive = false
     this.uiNavHintActive = false
     this.callStatePhase = null // [hub] M1
+    // [hub] work-log 38: clear stuck ring ducking on session stop
+    this.ringDuckingActive = false
+    this.clearRingDuckTimeout()
   }
 
   public setInitialVolumes(volumes: Partial<VolumeState>) {
@@ -325,6 +340,17 @@ export class ProjectionAudio {
         this.musicFade.target = this.ringDuckingTarget
         this.musicFade.remainingSamples = 0
       }
+      // [hub] work-log 38: start safety-net timeout. If the phone doesn't send
+      // a PhoneStatus update after the call ends (common when declining on the
+      // phone side), this timer auto-clears ring ducking so music isn't stuck
+      // muted forever.
+      this.clearRingDuckTimeout()
+      this.ringDuckTimeoutTimer = setTimeout(() => {
+        if (this.ringDuckingActive) {
+          console.log('[ring-trace] ringDuckTimeout: auto-clearing stuck ring ducking (no PhoneStatus received)')
+          this.duckMediaForRing(false)
+        }
+      }, this.ringDuckTimeoutMs)
     } else {
       // Restore music to full (or nav ducking target if nav is active)
       if (this.mediaActive && !this.voiceAssistantActive && !this.phonecallActive) {
@@ -332,6 +358,15 @@ export class ProjectionAudio {
         this.musicFade.target = this.navActive ? this.navDuckingTarget : 1
         this.musicFade.remainingSamples = 0
       }
+      this.clearRingDuckTimeout()
+    }
+  }
+
+  // [hub] work-log 38: helper to clear the ring duck timeout timer
+  private clearRingDuckTimeout(): void {
+    if (this.ringDuckTimeoutTimer) {
+      clearTimeout(this.ringDuckTimeoutTimer)
+      this.ringDuckTimeoutTimer = null
     }
   }
 
@@ -403,7 +438,8 @@ export class ProjectionAudio {
           // ring ducking target is not overwritten by the loop. The previous code
           // only checked navActive — when nav was not active, it set
           // desiredTarget=1 (full volume), overwriting the ringDuckingTarget
-          // (0.15) that duckMediaForRing(true) had just set. Now ring ducking
+          // (now 0 — fully mute during ring, work-log 37) that
+          // duckMediaForRing(true) had just set. Now ring ducking
           // takes priority over nav ducking (a ring is more important than nav),
           // and the restore-to-1 path only fires when neither is active.
           const canDuckNow = this.navActive
@@ -635,6 +671,15 @@ export class ProjectionAudio {
       if (cmd === AudioCommand.AudioMediaStart) {
         if (msg.audioType != null) this.musicAudioType = msg.audioType
 
+        // [hub] work-log 39: if media is starting while ring ducking is still
+        // active, the call must be over — the phone wouldn't start media during
+        // a ring. Clear ring ducking so the audio loop doesn't force music to 0.
+        if (this.ringDuckingActive) {
+          console.log('[ring-trace] AudioMediaStart while ringDuckingActive — clearing ring ducking (call must be over)')
+          this.ringDuckingActive = false
+          this.clearRingDuckTimeout()
+        }
+
         const baseDelay = this.getMediaDelay()
         const totalDelayMs = baseDelay
         const now = Date.now()
@@ -785,6 +830,7 @@ export class ProjectionAudio {
           this.emitCallState('active') // [hub] M1
           // [hub] Fix 3 (work-log 27): call answered — clear ring ducking flag
           this.ringDuckingActive = false
+          this.clearRingDuckTimeout() // [hub] work-log 38
         }
 
         // While voice is active, keep music muted via gate.

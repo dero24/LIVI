@@ -9,9 +9,12 @@
 //   - no hubd yet / unreachable   -> screensaver with a quiet "connecting" note
 //   - idle (no phones home)       -> screensaver
 //   - one or more phones          -> presence row + landing
-import { Box, IconButton, Typography } from '@mui/material'
+import { Box, IconButton, Popover, Slider, Typography } from '@mui/material'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import SettingsIcon from '@mui/icons-material/Settings'
+import VolumeUpIcon from '@mui/icons-material/VolumeUp'
+import VolumeDownIcon from '@mui/icons-material/VolumeDown'
+import VolumeOffIcon from '@mui/icons-material/VolumeOff'
 import { useLiviStore } from '@store/store'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NamingSheet } from './components/NamingSheet'
@@ -91,6 +94,9 @@ export function HubShell() {
   const [calibrationApp, setCalibrationApp] = useState<string | null>(null)
   const [navigating, setNavigating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // [hub] work-log 38: quick-access volume popover
+  const [volAnchor, setVolAnchor] = useState<HTMLElement | null>(null)
+  const [volDraft, setVolDraft] = useState(95)
   // [hub] Auto-open naming sheet for unnamed phones (replaces FirstRunChip).
   // When a phone has no person.name, the NamingSheet opens automatically so
   // the user can name it immediately — no chip to tap. Once dismissed with
@@ -124,6 +130,10 @@ export function HubShell() {
   // (same as AaSession), NOT from negotiatedWidth/Height — those are never set
   // in the renderer store (no IPC channel sends them from main).
   const liviSettings = useLiviStore((s) => s.settings)
+  // [hub] work-log 38: sync quick-access volume slider from config
+  const huVolume = liviSettings?.huVolume ?? 0.95
+  useEffect(() => { setVolDraft(Math.round(huVolume * 100)) }, [huVolume])
+  const VolIcon = volDraft === 0 ? VolumeOffIcon : volDraft < 33 ? VolumeDownIcon : VolumeUpIcon
   const touchTransform: TouchTransform | null = useMemo(
     () =>
       buildTouchTransform({
@@ -522,23 +532,69 @@ export function HubShell() {
             aria-label="Back"
             data-testid="hub-back-button"
             onClick={handleBack}
-            size="small"
-            sx={{ color: t.text, opacity: 0.85, '&:hover': { opacity: 1, backgroundColor: 'rgba(255,255,255,0.08)' } }}
+            sx={{ color: t.text, opacity: 0.85, padding: '0.6rem', '&:hover': { opacity: 1, backgroundColor: 'rgba(255,255,255,0.08)' } }}
           >
-            <ArrowBackIcon fontSize="small" />
+            <ArrowBackIcon sx={{ fontSize: '1.6rem' }} />
           </IconButton>
         )}
         <IconButton
           aria-label="Settings"
           data-testid="hub-settings-gear"
           onClick={() => setSettingsOpen(true)}
-          size="small"
-          sx={{ color: t.text, opacity: 0.85, '&:hover': { opacity: 1, backgroundColor: 'rgba(255,255,255,0.08)' } }}
+          sx={{ color: t.text, opacity: 0.85, padding: '0.6rem', '&:hover': { opacity: 1, backgroundColor: 'rgba(255,255,255,0.08)' } }}
         >
-          <SettingsIcon fontSize="small" />
+          <SettingsIcon sx={{ fontSize: '1.6rem' }} />
+        </IconButton>
+        {/* [hub] work-log 38: quick-access volume button + popover slider */}
+        <IconButton
+          aria-label="Volume"
+          onClick={(e) => setVolAnchor(e.currentTarget)}
+          sx={{ color: t.text, opacity: 0.85, padding: '0.6rem', '&:hover': { opacity: 1, backgroundColor: 'rgba(255,255,255,0.08)' } }}
+        >
+          <VolIcon sx={{ fontSize: '1.6rem' }} />
         </IconButton>
         <HealthDot healthy={healthy} stale={stale} />
       </Box>
+
+      {/* [hub] work-log 38: sleek volume popover — vertical slider, auto-closes */}
+      <Popover
+        open={!!volAnchor}
+        anchorEl={volAnchor}
+        onClose={() => setVolAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{
+          paper: {
+            sx: {
+              backgroundColor: t.surface,
+              padding: '0.5rem 0.35rem',
+              borderRadius: '0.6rem',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.4)'
+            }
+          }
+        }}
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: 160, width: 44 }}>
+          <Typography sx={{ fontSize: '0.7rem', color: t.text, marginBottom: '0.25rem' }}>{volDraft}</Typography>
+          <Slider
+            value={volDraft}
+            min={0}
+            max={100}
+            step={1}
+            orientation="vertical"
+            onChange={(_, v) => setVolDraft(v as number)}
+            onChangeCommitted={(_, v) => {
+              void window.hub?.intent({ type: 'settings.set', settings: { huVolume: (v as number) / 100 } })
+            }}
+            sx={{
+              color: t.text,
+              '& .MuiSlider-thumb': { width: 16, height: 16 },
+              '& .MuiSlider-rail': { opacity: 0.3 },
+              '& .MuiSlider-track': { border: 'none' }
+            }}
+          />
+        </Box>
+      </Popover>
 
       {/* [hub] Phase 1.10: Screensaver mode — clock + date + bubbles (opaque).
           [hub] Fix 1 (work-log 27): hidden when a ring is active so the AA video

@@ -9,7 +9,7 @@
 // detail view with a back button. Phone detail includes rename, forget,
 // recalibration, policy toggles, and enrollment — all the per-phone controls
 // that were previously crammed into a single scroll.
-import { Box, Button, Divider, Drawer, IconButton, MenuItem, Select, Switch, Typography } from '@mui/material'
+import { Box, Button, Divider, Drawer, IconButton, MenuItem, Select, Slider, Switch, Typography } from '@mui/material'
 import SettingsIcon from '@mui/icons-material/Settings'
 import CloseIcon from '@mui/icons-material/Close'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
@@ -19,6 +19,8 @@ import TuneIcon from '@mui/icons-material/Tune'
 import WifiIcon from '@mui/icons-material/Wifi'
 import PhoneIcon from '@mui/icons-material/PhoneIphone'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
+import VolumeDownIcon from '@mui/icons-material/VolumeDown'
+import VolumeOffIcon from '@mui/icons-material/VolumeOff'
 import DisplaySettingsIcon from '@mui/icons-material/DisplaySettings'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useLiviStore } from '@store/store'
@@ -359,6 +361,7 @@ function AudioView({
   onRefresh,
   audioOutput,
   audioInput,
+  huVolume,
   busy,
   msg
 }: {
@@ -368,10 +371,16 @@ function AudioView({
   onRefresh: () => void
   audioOutput: string
   audioInput: string
+  huVolume: number
   busy: string | null
   msg: string | null
 }) {
   const t = useHubTokens()
+  // [hub] work-log 38: local volume state for responsive slider dragging.
+  // Syncs from config when not actively dragging.
+  const [volDraft, setVolDraft] = useState<number>(Math.round(huVolume * 100))
+  useEffect(() => { setVolDraft(Math.round(huVolume * 100)) }, [huVolume])
+  const VolumeIcon = volDraft === 0 ? VolumeOffIcon : volDraft < 33 ? VolumeDownIcon : VolumeUpIcon
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
@@ -396,6 +405,32 @@ function AudioView({
         >
           ↻ Refresh
         </Button>
+      </Box>
+
+      {/* [hub] work-log 38: system volume slider — controls pactl sink volume
+          via the huVolume config key + huVolumeLinkSystem. */}
+      <Box sx={{ padding: '0.5rem 0 0.75rem' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+          <VolumeIcon sx={{ color: t.text, fontSize: '1.1rem' }} />
+          <Typography sx={{ fontSize: '0.85rem', fontWeight: 500 }}>Volume</Typography>
+          <Typography sx={{ fontSize: '0.75rem', color: t.textMuted, marginLeft: 'auto' }}>{volDraft}%</Typography>
+        </Box>
+        <Slider
+          value={volDraft}
+          min={0}
+          max={100}
+          step={1}
+          onChange={(_, v) => setVolDraft(v as number)}
+          onChangeCommitted={(_, v) => {
+            intent({ type: 'settings.set', settings: { huVolume: (v as number) / 100 } })
+          }}
+          sx={{
+            color: t.text,
+            '& .MuiSlider-thumb': { width: 18, height: 18 },
+            '& .MuiSlider-rail': { opacity: 0.3 },
+            '& .MuiSlider-track': { border: 'none' }
+          }}
+        />
       </Box>
 
       <Box sx={{ padding: '0.5rem 0' }}>
@@ -757,6 +792,7 @@ export function SettingsPanel({
           onRefresh={refreshAudio}
           audioOutput={audioOutput}
           audioInput={audioInput}
+          huVolume={liviSettings?.huVolume ?? 0.95}
           busy={busy}
           msg={msg}
         />
