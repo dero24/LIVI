@@ -620,6 +620,18 @@ export class ProjectionService {
   private emitProjectionEvent(payload: ProjectionEvent): void {
     this.webContents?.send('projection-event', payload)
     broadcastToSecondaryRenderers('projection-event', payload)
+    // [hub] work-log 41: when a call starts ringing, proactively initiate HFP
+    // SLC to the phone so call audio can route to the hub via SCO. The phone
+    // may not auto-connect HFP, so we must trigger it from the Pi side.
+    if (payload.type === 'callState' && (payload as { payload?: { phase?: string } }).payload?.phase === 'incoming') {
+      const btMac = this._getActiveBtMac()
+      if (btMac) {
+        console.log(`[ring-trace] callState incoming — triggering hfpConnect to ${btMac}`)
+        this.aaBtSock.hfpConnect(btMac).catch((e) =>
+          console.warn('[ProjectionService] hfpConnect on callState failed', e)
+        )
+      }
+    }
     // [hub] fan out to the bridge last, guarded so a tap error cannot break the UI.
     for (const tap of this.hubEventTaps) {
       try {
@@ -628,6 +640,18 @@ export class ProjectionService {
         console.warn('[ProjectionService] hub event tap threw (ignored)', e)
       }
     }
+  }
+
+  // [hub] work-log 41: get the BT MAC of the active projecting phone, if any.
+  // Falls back to any paired phone (not just connected) because HFP may not
+  // be connected yet — that's the whole reason we're calling hfpConnect.
+  private _getActiveBtMac(): string | null {
+    if (this.connectedAaBtMac) return this.connectedAaBtMac
+    // Fall back to any paired BT device (aaBtNameByMac includes all paired devices)
+    for (const mac of this.aaBtNameByMac.keys()) {
+      return mac
+    }
+    return null
   }
 
   // Reflects the current HEVC decode capability seeded into each AA session
@@ -1995,6 +2019,13 @@ export class ProjectionService {
       fn(mac).catch((e) => console.warn(`[ProjectionService] ${key} failed`, e))
       return { ok: true }
     }
+    // [hub] work-log 41: initiate HFP SLC from the Pi to the phone.
+    if (key === 'hfpConnect') {
+      const mac = typeof args.mac === 'string' ? args.mac : ''
+      if (!mac) return { ok: false, error: 'hfpConnect requires a mac' }
+      this.aaBtSock.hfpConnect(mac).catch((e) => console.warn(`[ProjectionService] hfpConnect failed`, e))
+      return { ok: true }
+    }
     // companionAccept / companionDecline: the companion push path lands with its
     // transport (a push from hubd → companion, acted on via TelecomManager).
     return { ok: false, error: `command-not-wired:${key}` }
@@ -2043,6 +2074,11 @@ export class ProjectionService {
             }
             if (ev.event === 'hfpSlc') {
               this.emitProjectionEvent({ type: 'hfpSlc', mac: ev.mac })
+              return
+            }
+            // [hub] work-log 41: forward hfpSco events so hubd can track SCO state
+            if (ev.event === 'hfpSco') {
+              this.emitProjectionEvent({ type: 'hfpSco', mac: ev.mac, up: ev.up ?? false })
               return
             }
           }

@@ -127,6 +127,13 @@ export class AaBtSockClient {
     return (await this.request(`hfp-hangup ${mac}`, timeoutMs)) as ActionResponse
   }
 
+  // [hub] work-log 41: initiate HFP SLC from the Pi to the phone.
+  // The phone may not auto-connect HFP, so we must call this to establish
+  // the RFCOMM control channel. After SLC, AT+BCC triggers SCO audio.
+  async hfpConnect(mac: string, timeoutMs = 15000): Promise<ActionResponse> {
+    return (await this.request(`hfp-connect ${mac}`, timeoutMs)) as ActionResponse
+  }
+
   // Open a event subscription
   subscribe(
     onEvent: (ev: {
@@ -141,6 +148,8 @@ export class AaBtSockClient {
       number?: string
       name?: string
       state?: string
+      // [hub] work-log 41: hfpSco up/down
+      up?: boolean
     }) => void,
     onClose?: () => void,
     onOpen?: () => void

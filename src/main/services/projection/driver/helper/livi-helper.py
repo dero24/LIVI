@@ -407,6 +407,18 @@ def main():
         GLib.idle_add(_sync_wireless)
     else:
         log("wireless off at start: Bluetooth + Wi-Fi AP idle (runtime toggle armed)")
+        # [hub] work-log 40: even with wireless AA/CP off, we need HFP for call
+        # audio routing. The AA telephony channel (AS_TELEPHONY) is disabled for
+        # Samsung, so Bluetooth HFP/SCO is the only path for call audio on the hub.
+        # Register just the HFP/HSP profiles without the full AA wireless stack.
+        try:
+            from bt import aa_handler
+            hfp_handler = aa_handler.create(ctx)
+            hfp_handler.register_hfp_only()
+            aa_ref["hfp_only"] = hfp_handler
+            log("HFP Hands-Free profile registered (call audio for wired AA)")
+        except Exception as e:
+            log("HFP-only registration failed:", repr(e))
 
     mainloop = GLib.MainLoop()
 
@@ -421,6 +433,13 @@ def main():
         for h in handlers:
             try:
                 h.teardown()
+            except Exception:
+                pass
+        # [hub] work-log 40: tear down HFP-only handler if it was registered
+        hfp_only = aa_ref.get("hfp_only")
+        if hfp_only:
+            try:
+                hfp_only.teardown()
             except Exception:
                 pass
         try:

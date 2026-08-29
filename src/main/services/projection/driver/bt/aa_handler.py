@@ -459,6 +459,11 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
                                 with _hfp_fds_lock:
                                     _hfp_fds[_hfp_mac] = (fd, device_path)
                             _push_hfp("hfpSlc")
+                            # [hub] work-log 41: send AT+BCC to trigger codec
+                            # negotiation + SCO audio link. The AG (phone) will
+                            # respond with +BCS and then open the SCO/eSCO link.
+                            _send("AT+BCC\r")
+                            dprint("[hfp] >> AT+BCC (trigger SCO)", flush=True)
 
                 elif line.startswith("+CIND:"):
                     dprint(f"[hfp]    indicators: {line}", flush=True)
@@ -510,8 +515,12 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
 
                 elif line.startswith("+BCS:"):
                     codec = line.split(":")[1].strip()
-                    dprint(f"[hfp]    codec selected: {codec}", flush=True)
+                    dprint(f"[hfp]    codec selected: {codec} — SCO coming up", flush=True)
                     _send(f"AT+BCS={codec}\r")
+                    # [hub] work-log 41: push hfpSco event so hubd knows
+                    # SCO audio is establishing. This lets answerVia resolve
+                    # to 'hfp' instead of always 'projection'.
+                    _push_hfp("hfpSco", up=True)
 
                 elif line == "ATA":
                     # [hub] Tier 3 (§9.4 step 4): actionable answer. The hub
@@ -585,6 +594,8 @@ def _handle_hfp_rfcomm(fd: int, device_path: str, initial_data: bytes = b"") -> 
         if _hfp_mac:
             with _hfp_fds_lock:
                 _hfp_fds.pop(_hfp_mac, None)
+            # [hub] work-log 41: push hfpSco down so hubd clears the SCO owner
+            _push_hfp("hfpSco", up=False)
         try:
             os.close(fd)
         except OSError:
@@ -964,6 +975,18 @@ def _device_connect(mac: str) -> tuple[bool, str]:
     return ok, err
 
 
+def _device_connect_hfp(mac: str) -> tuple[bool, str]:
+    """[hub] work-log 41: Open HFP SLC from the Pi (HF) to the phone (AG).
+    The phone may not auto-connect HFP, so we initiate it via BlueZ
+    ConnectProfile with the HFP AG UUID."""
+    dprint(f"[aa-bt] hfp-connect → {mac} (HFP_AG)", flush=True)
+    return _device_call(
+        _device_path(mac), "org.bluez.Device1", "ConnectProfile",
+        "s", HFP_AG_UUID,
+        timeout=15.0,
+    )
+
+
 def _device_connect_full(mac: str) -> tuple[bool, str]:
     """Connect all auto-connect profiles (A2DP + HFP + HSP). Used for audio devices."""
     dprint(f"[aa-bt] connect-full → {mac} (Device1.Connect, all profiles)",
@@ -1129,9 +1152,19 @@ def _start_event_server() -> None:
                 return {"ok": True, "count": count}
             # [hub] Phase 2.5: outbound HFP call control (§9.4 step 4, §9.3).
             if cmd == "hfp-answer":
-                return _hfp_write_at(arg, "ATA")
+                _r = _hfp_write_at(arg, "ATA")
+                # [hub] work-log 41: send AT+BCC after ATA to trigger SCO audio
+                _hfp_write_at(arg, "AT+BCC")
+                return _r
             if cmd == "hfp-hangup":
                 return _hfp_write_at(arg, "AT+CHUP")
+            # [hub] work-log 41: initiate HFP SLC from the Pi (HF) to the phone (AG).
+            # The phone may not auto-connect HFP, so we must initiate it.
+            if cmd == "hfp-connect":
+                if not arg:
+                    return {"ok": False, "error": "hfp-connect requires a MAC argument"}
+                ok, err = _device_connect_hfp(arg)
+                return {"ok": ok} if ok else {"ok": False, "error": err}
             return {"ok": False, "error": f"unknown command: {cmd!r}"}
         except Exception as e:
             traceback.print_exc()
@@ -1483,6 +1516,58 @@ class AaHandler:
         self._ad_manager = None
         self._media_iface = None
         self._objs = {}
+
+    # [hub] work-log 40: register HFP/HSP profiles without requiring wireless AA.
+    # Call audio over Bluetooth HFP/SCO is needed for wired AA too — the AA
+    # telephony channel (AS_TELEPHONY) is disabled for Samsung, so HFP is the
+    # only path for call audio on the hub. This method registers just the HFP
+    # and HSP profiles + the event server + device signal subscription, without
+    # the AA wireless RFCOMM profile or BLE advertisement.
+    def register_hfp_only(self):
+        bus = self.ctx.bus
+        profile_manager = dbus.Interface(
+            bus.get_object(BLUEZ_SERVICE, BLUEZ_OBJ), PROFILE_MANAGER)
+        self._profile_manager = profile_manager
+
+        try:
+            profile_manager.UnregisterProfile("/livi/bt/hfp")
+        except Exception:
+            pass
+        hfp_obj = HFPProfile(bus, "/livi/bt/hfp")
+        self._objs["hfp"] = hfp_obj
+        try:
+            profile_manager.RegisterProfile(hfp_obj, HFP_HF_UUID, {
+                "Name": "HFP Hands-Free",
+                "Role": "client",
+                "RequireAuthentication": False,
+                "RequireAuthorization": False,
+                "Features": dbus.UInt16(0x009C),
+                "Version": dbus.UInt16(0x0108),
+            })
+            dprint("[aa] registered HFP HF profile (hfp-only mode)")
+        except dbus.exceptions.DBusException as e:
+            dprint(f"[aa] HFP profile: {e}")
+
+        try:
+            profile_manager.UnregisterProfile("/livi/bt/hsp_hs")
+        except Exception:
+            pass
+        try:
+            hsp_obj = DummyProfile(bus, "/livi/bt/hsp_hs")
+            self._objs["hsp"] = hsp_obj
+            profile_manager.RegisterProfile(hsp_obj, HSP_HS_UUID, {
+                "Name": "HSP HS",
+                "Role": "client",
+                "RequireAuthentication": False,
+                "RequireAuthorization": False,
+            })
+            dprint("[aa] registered HSP HS profile (hfp-only mode)")
+        except dbus.exceptions.DBusException as e:
+            dprint(f"[aa] HSP profile: {e}")
+
+        _start_event_server()
+        _subscribe_device_signals(bus)
+        dprint("[aa] HFP-only registration complete (event server + signals active)", flush=True)
 
     def register(self):
         bus = self.ctx.bus
