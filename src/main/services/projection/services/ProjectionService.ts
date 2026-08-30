@@ -2330,25 +2330,25 @@ export class ProjectionService {
       if (!this.isStarting) {
         if (!prev) this.audio.resetForSessionStart()
         next.driver.requestKeyframe?.()
-        // [hub] (work-log 31): suppress auto-play. When a phone connects via
-        // AA, the phone's media app (Spotify etc.) often auto-plays because it
-        // was the last active media app. Send a playPause toggle after a short
-        // delay to pause it. The delay lets the session fully establish before
-        // we send the command. Only fires on the first session (no prev), not
-        // on session switches.
+        // [hub] (work-log 31, fixed work-log 44): suppress auto-play. When a
+        // phone connects via AA, the phone's media app (Spotify etc.) often
+        // auto-plays because it was the last active media app. Send a 'pause'
+        // command (NOT 'playPause' — that's a toggle and will START music if
+        // the phone was already paused). The delay lets the session fully
+        // establish before we send the command. Only fires on the first session
+        // (no prev), not on session switches. A second pause is sent at 4s in
+        // case the phone auto-plays again after the first suppress.
         if (!prev && next.protocol === 'androidauto') {
-          setTimeout(() => {
+          const sendPause = (): void => {
             try {
-              next.driver.sendCommand?.('playPause')
-              // Send it again after a brief delay — the first toggle may pause,
-              // but sometimes the phone auto-plays again after a moment.
-              // A single playPause is safer (toggle could resume if already paused).
-              // We send ONE toggle: if auto-play just started, this pauses it.
-              console.log('[hub] auto-play suppress: playPause sent')
+              ;(next.driver as unknown as { sendCommand?: (key: string) => void }).sendCommand?.('pause')
+              console.log('[hub] auto-play suppress: pause sent')
             } catch (e) {
               console.warn('[hub] auto-play suppress failed', e)
             }
-          }, 2000)
+          }
+          setTimeout(sendPause, 2000)
+          setTimeout(sendPause, 4000)
         }
       }
     } else {

@@ -177,7 +177,7 @@ function PhoneDetailView({
 
   const displayName = phone.person?.name || phone.person?.deviceName || 'Unknown'
   const deviceName = phone.person?.deviceName ?? '—'
-  const subtitleParts = [phone.presence.level]
+  const subtitleParts: string[] = [phone.presence.level]
   if (phone.livi?.batteryLevel != null) subtitleParts.push(`${phone.livi.batteryLevel}%${phone.livi.batteryCharging ? ' charging' : ''}`)
   if (phone.platform) subtitleParts.push(phone.platform)
   if (phone.protocol) subtitleParts.push(phone.protocol)
@@ -719,7 +719,7 @@ export function SettingsPanel({
           ) : (
             phones.map((p) => {
               const displayName = p.person?.name || p.person?.deviceName || 'Unknown'
-              const subtitleParts = [p.presence.level]
+              const subtitleParts: string[] = [p.presence.level]
               if (p.livi?.batteryLevel != null) subtitleParts.push(`${p.livi.batteryLevel}%`)
               if (p.platform) subtitleParts.push(p.platform)
               return (

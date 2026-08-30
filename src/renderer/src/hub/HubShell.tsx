@@ -31,6 +31,7 @@ import {
   type LandingTile,
   type CalibData
 } from './components/Landing'
+import { NowPlaying } from './components/NowPlaying'
 import { PresenceRow } from './components/PresenceRow'
 import { RingBanner } from './components/RingBanner'
 import { Screensaver } from './components/Screensaver'
@@ -38,6 +39,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import type { HubPhone } from './types'
 import { useHubState } from './useHubState'
 import { useHubTokens } from './useHubTokens'
+import { useNowPlaying } from './useNowPlaying'
 import { buildTouchTransform, displayToTouchNorm, type TouchTransform } from './touchNorm'
 
 function isHome(p: HubPhone): boolean {
@@ -189,6 +191,12 @@ export function HubShell() {
   // it is the view-area inset. The video plane is toggled by Projection.tsx
   // (setVisible + show-video class), gated on receivingVideo from LIVI.
   const anyProjecting = phones.some((p) => p.presence.level === 'projecting')
+
+  // [hub] Phase 5: now-playing media state. Subscribes to projection media
+  // events (window.projection.ipc.onEvent) and readMedia() for initial state.
+  // Only active while a phone is projecting — the hook no-ops otherwise.
+  const nowPlaying = useNowPlaying(anyProjecting)
+  const projectingPhoneName = projectingPhone?.person?.name ?? undefined
 
   // [hub] §12.2: latch `anyProjecting` with hysteresis so a one-frame presence
   // blip from hubd (e.g. a status refresh that momentarily drops `projecting` to
@@ -596,9 +604,13 @@ export function HubShell() {
         </Box>
       </Popover>
 
-      {/* [hub] Phase 1.10: Screensaver mode — clock + date + bubbles (opaque).
-          [hub] Fix 1 (work-log 27): hidden when a ring is active so the AA video
-          and native call UI show through behind the RingBanner. */}
+      {/* [hub] Phase 1.10: Home screen (formerly "screensaver") — clock + date +
+          bubbles (opaque). [hub] Fix 1 (work-log 27): hidden when a ring is active
+          so the AA video and native call UI show through behind the RingBanner.
+          [hub] Phase 5 (work-log 44): when music is playing, the Screensaver
+          splits internally — top half keeps clock/bubbles/status (tappable to
+          switch phones), bottom half shows the NowPlaying split variant with
+          album art, metadata, progress, and transport. No full-screen takeover. */}
       {viewMode === 'screensaver' && !ring && (
         <Screensaver
           message={connecting ? 'Connecting to the hub…' : phones.length === 0 ? 'Dock a phone to begin' : undefined}
@@ -609,6 +621,8 @@ export function HubShell() {
           }
           phones={phones}
           onSelect={handleBubbleSelect}
+          nowPlaying={nowPlaying ?? undefined}
+          phoneLabel={projectingPhoneName}
         />
       )}
 
@@ -656,9 +670,15 @@ export function HubShell() {
                 Wired to window.projection.ipc.sendCommand, which maps through
                 CommandMapping → BUTTON_KEY.MEDIA_* in AaSession's SendCommand
                 handler (src/main/services/projection/driver/aa/AaSession.ts).
-                Only shown while a phone is projecting (otherwise no AA session
-                to receive the button press). */}
-            {anyProjecting && <MediaControls />}
+                [hub] Phase 5 (work-log 44): compact NowPlaying strip (art
+                thumbnail + title/artist + transport). The old bare
+                MediaControls fallback was removed — it showed for ~5s before
+                media metadata arrived, creating a jarring transition. Now
+                nothing renders until media data is available, then the
+                compact NowPlaying fades in smoothly. */}
+            {anyProjecting && nowPlaying && (
+              <NowPlaying data={nowPlaying} variant="compact" phoneLabel={projectingPhoneName} />
+            )}
           </Box>
           <Box
             sx={{
