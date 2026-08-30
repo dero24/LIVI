@@ -572,7 +572,8 @@ interface TransportProps {
 }
 
 function TransportControls({ isPlaying, size, sx }: TransportProps) {
-  const send = useCallback((key: string) => () => {
+  const send = useCallback((key: string) => (e: { stopPropagation?: () => void }) => {
+    e?.stopPropagation?.()
     window.projection.ipc.sendCommand(key)
   }, [])
 

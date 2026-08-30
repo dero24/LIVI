@@ -199,6 +199,12 @@ export function HubShell() {
   const nowPlaying = useNowPlaying(anyProjecting)
   const projectingPhoneName = projectingPhone?.person?.name ?? undefined
 
+  // [hub] Work-log 48: now-playing expand overlay. When the user taps the
+  // ambient strip on the home screen, the full NowPlaying overlay appears
+  // with album art, metadata, progress, and transport controls. Tapping
+  // anywhere outside the overlay (or pressing back) dismisses it.
+  const [npExpanded, setNpExpanded] = useState(false)
+
   // [hub] §12.2: latch `anyProjecting` with hysteresis so a one-frame presence
   // blip from hubd (e.g. a status refresh that momentarily drops `projecting` to
   // `docked`) cannot disable AA-mode touch passthrough. Immediate on, 2s
@@ -608,11 +614,12 @@ export function HubShell() {
       {/* [hub] Phase 1.10: Home screen (formerly "screensaver") — clock + date +
           bubbles (opaque). [hub] Fix 1 (work-log 27): hidden when a ring is active
           so the AA video and native call UI show through behind the RingBanner.
-          [hub] Phase 5 (work-log 44): when music is playing, the Screensaver
-          splits internally — top half keeps clock/bubbles/status (tappable to
-          switch phones), bottom half shows the NowPlaying split variant with
-          album art, metadata, progress, and transport. No full-screen takeover. */}
-      {viewMode === 'screensaver' && !ring && (
+          [hub] Work-log 48: the old 50/50 split layout (work-log 44) was too
+          visually heavy — big album art competing with the clock. Replaced with
+          an ambient strip: the home screen stays centered and calm, and when
+          music is playing a minimal one-line strip appears at the bottom.
+          Tapping the strip expands a full NowPlaying overlay (see below). */}
+      {viewMode === 'screensaver' && !ring && !npExpanded && (
         <Screensaver
           message={connecting ? 'Connecting to the hub…' : phones.length === 0 ? 'Dock a phone to begin' : undefined}
           subtitle={
@@ -624,7 +631,51 @@ export function HubShell() {
           onSelect={handleBubbleSelect}
           nowPlaying={nowPlaying ?? undefined}
           phoneLabel={projectingPhoneName}
+          onExpandNowPlaying={() => setNpExpanded(true)}
         />
+      )}
+
+      {/* [hub] Work-log 48: Full NowPlaying overlay — shown when the user taps
+          the ambient strip on the home screen. Full-screen with album art,
+          metadata, progress bar, and transport controls. Tap the backdrop or
+          press back to dismiss. Only shown in screensaver mode (not in
+          landing/AA mode — the compact bar already has controls there). */}
+      {viewMode === 'screensaver' && !ring && npExpanded && nowPlaying && (
+        <Box
+          className="hub-interactive"
+          sx={{ position: 'absolute', inset: 0, zIndex: 1300, pointerEvents: 'auto' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setNpExpanded(false) }}
+        >
+          <NowPlaying data={nowPlaying} variant="full" phoneLabel={projectingPhoneName} />
+          {/* Close button — top-left, large touch target */}
+          <Box
+            role="button"
+            aria-label="Close now playing"
+            data-testid="hub-np-close"
+            onClick={() => setNpExpanded(false)}
+            sx={{
+              position: 'absolute',
+              top: 'clamp(0.75rem, 2.5vh, 1.5rem)',
+              left: 'clamp(0.75rem, 3vw, 1.5rem)',
+              width: 'clamp(2.5rem, 8vmin, 3rem)',
+              height: 'clamp(2.5rem, 8vmin, 3rem)',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              color: '#FFFFFF',
+              backgroundColor: 'rgba(255,255,255,0.12)',
+              backdropFilter: 'blur(8px)',
+              zIndex: 1400,
+              transition: 'transform 100ms ease, background-color 160ms ease',
+              '&:active': { transform: 'scale(0.92)' },
+              '&:hover': { backgroundColor: 'rgba(255,255,255,0.18)' }
+            }}
+          >
+            <ArrowBackIcon sx={{ fontSize: 'clamp(1.2rem, 4vmin, 1.6rem)' }} />
+          </Box>
+        </Box>
       )}
 
       {/* [hub] Phase 1.10: Landing / AA mode — bar + content.

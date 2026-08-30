@@ -455,6 +455,11 @@ export class ProjectionService {
   private lastPluggedPhoneType?: PhoneType
   private aaPlaybackInferred: 1 | 2 = 1
   private pendingStartupConnectTarget: PendingStartupConnectTarget | null = null
+  // [hub] work-log 47: auto-play suppression window. Spotify re-plays after
+  // our initial pause. We keep sending pause for up to 12s, reacting to
+  // play-status events. Cleared when we see paused/stopped or the window expires.
+  private autoPlaySuppressUntil = 0
+  private autoPlaySuppressTimer: ReturnType<typeof setTimeout> | null = null
 
   private audio: ProjectionAudio
   private systemSound = new SystemSound(() => this.config)
@@ -902,10 +907,33 @@ export class ProjectionService {
         if (msg.command === 10) {
           this.aaPlaybackInferred = 1
           this.mediaStore.patchAaPlayStatus(this.sessions.active(), 1)
+          // [hub] work-log 47: if we're in the auto-play suppression window and
+          // the phone started playing, re-send pause immediately. Spotify
+          // auto-resumes after our initial pause; this reactive re-pause catches
+          // it every time until the window expires or the user manually plays.
+          if (this.autoPlaySuppressUntil > 0 && Date.now() < this.autoPlaySuppressUntil) {
+            const active = this.sessions.active()
+            if (active) {
+              try {
+                ;(active.driver as unknown as { sendCommand?: (key: string) => void }).sendCommand?.('pause')
+                console.log('[hub] auto-play suppress: reactive pause sent (phone started playing)')
+              } catch (e) {
+                console.warn('[hub] auto-play suppress: reactive pause failed', e)
+              }
+            }
+          }
         }
         if (msg.command === 11 || msg.command === 2) {
           this.aaPlaybackInferred = 2
           this.mediaStore.patchAaPlayStatus(this.sessions.active(), 2)
+          // [hub] work-log 47: phone is paused — we can end the suppression early.
+          if (this.autoPlaySuppressUntil > 0) {
+            this.autoPlaySuppressUntil = 0
+            if (this.autoPlaySuppressTimer) {
+              clearTimeout(this.autoPlaySuppressTimer)
+              this.autoPlaySuppressTimer = null
+            }
+          }
         }
       }
 
@@ -2337,15 +2365,15 @@ export class ProjectionService {
       if (!this.isStarting) {
         if (!prev) this.audio.resetForSessionStart()
         next.driver.requestKeyframe?.()
-        // [hub] (work-log 31, fixed work-log 44): suppress auto-play. When a
-        // phone connects via AA, the phone's media app (Spotify etc.) often
-        // auto-plays because it was the last active media app. Send a 'pause'
-        // command (NOT 'playPause' — that's a toggle and will START music if
-        // the phone was already paused). The delay lets the session fully
-        // establish before we send the command. Only fires on the first session
-        // (no prev), not on session switches. A second pause is sent at 4s in
-        // case the phone auto-plays again after the first suppress.
+        // [hub] (work-log 31, fixed work-log 44, re-fixed work-log 47):
+        // suppress auto-play. When a phone connects via AA, the phone's media
+        // app (Spotify etc.) auto-plays because it was the last active media
+        // app. Send 'pause' (NOT 'playPause' — that's a toggle and will START
+        // music if already paused). Spotify re-plays after a single pause, so
+        // we keep a suppression window open for 12s and re-pause whenever we
+        // detect playback. Only fires on the first session (no prev).
         if (!prev && next.protocol === 'androidauto') {
+          this.autoPlaySuppressUntil = Date.now() + 12000
           const sendPause = (): void => {
             try {
               ;(next.driver as unknown as { sendCommand?: (key: string) => void }).sendCommand?.('pause')
@@ -2354,8 +2382,16 @@ export class ProjectionService {
               console.warn('[hub] auto-play suppress failed', e)
             }
           }
+          // Initial pauses at T+2s, T+4s, T+6s
           setTimeout(sendPause, 2000)
           setTimeout(sendPause, 4000)
+          setTimeout(sendPause, 6000)
+          // Clear the window after 12s
+          if (this.autoPlaySuppressTimer) clearTimeout(this.autoPlaySuppressTimer)
+          this.autoPlaySuppressTimer = setTimeout(() => {
+            this.autoPlaySuppressUntil = 0
+            this.autoPlaySuppressTimer = null
+          }, 12000)
         }
       }
     } else {
