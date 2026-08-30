@@ -34,6 +34,7 @@ import {
 import { NowPlaying } from './components/NowPlaying'
 import { PresenceRow } from './components/PresenceRow'
 import { RingBanner } from './components/RingBanner'
+import { InCallView } from './components/InCallView'
 import { Screensaver } from './components/Screensaver'
 import { SettingsPanel } from './components/SettingsPanel'
 import type { HubPhone } from './types'
@@ -761,8 +762,21 @@ export function HubShell() {
 
       {/* [hub] Phase 2.3: the ring banner is a z-layer over whatever is on
           screen (§12.2/§12.6 state E). It preempts the screensaver, the landing
-          page and projection; the previous surface is restored when it ends. */}
-      {ring && (
+          page and projection; the previous surface is restored when it ends.
+          [hub] Phase 6: when the call is active, show InCallView instead. */}
+      {ring && ring.state === 'active' && (
+        <Box className="hub-interactive" sx={{ pointerEvents: 'auto' }}>
+          <InCallView
+            ring={ring}
+            knownPhoneCount={phones.length}
+            onEnd={(phoneId) => intent({ type: 'ring.hangup', phoneId })}
+            onMute={(phoneId) => intent({ type: 'ring.mute', phoneId })}
+            onMoveToPhone={(phoneId) => intent({ type: 'ring.moveToPhone', phoneId })}
+            onTakeBackOnHub={(phoneId) => intent({ type: 'ring.takeBackOnHub', phoneId })}
+          />
+        </Box>
+      )}
+      {ring && ring.state !== 'active' && (
         <Box className="hub-interactive" sx={{ pointerEvents: 'auto' }}>
           <RingBanner
             ring={ring}

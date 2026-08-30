@@ -987,6 +987,18 @@ def _device_connect_hfp(mac: str) -> tuple[bool, str]:
     )
 
 
+def _device_disconnect_hfp(mac: str) -> tuple[bool, str]:
+    """[hub] Phase 6: Disconnect the HFP (and therefore SCO/eSCO) profile from
+    the phone AG. Used by ring.moveToPhone to move call audio back to the
+    phone's earpiece."""
+    dprint(f"[aa-bt] hfp-sco-disconnect → {mac} (HFP_AG)", flush=True)
+    return _device_call(
+        _device_path(mac), "org.bluez.Device1", "DisconnectProfile",
+        "s", HFP_AG_UUID,
+        timeout=15.0,
+    )
+
+
 def _device_connect_full(mac: str) -> tuple[bool, str]:
     """Connect all auto-connect profiles (A2DP + HFP + HSP). Used for audio devices."""
     dprint(f"[aa-bt] connect-full → {mac} (Device1.Connect, all profiles)",
@@ -1164,6 +1176,12 @@ def _start_event_server() -> None:
                 if not arg:
                     return {"ok": False, "error": "hfp-connect requires a MAC argument"}
                 ok, err = _device_connect_hfp(arg)
+                return {"ok": ok} if ok else {"ok": False, "error": err}
+            # [hub] Phase 6: disconnect HFP/SCO to move call audio to the phone.
+            if cmd == "hfp-sco-disconnect":
+                if not arg:
+                    return {"ok": False, "error": "hfp-sco-disconnect requires a MAC argument"}
+                ok, err = _device_disconnect_hfp(arg)
                 return {"ok": ok} if ok else {"ok": False, "error": err}
             return {"ok": False, "error": f"unknown command: {cmd!r}"}
         except Exception as e:

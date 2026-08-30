@@ -134,6 +134,12 @@ export class AaBtSockClient {
     return (await this.request(`hfp-connect ${mac}`, timeoutMs)) as ActionResponse
   }
 
+  // [hub] Phase 6: disconnect the HFP (and therefore SCO/eSCO) profile from
+  // the phone. Used by ring.moveToPhone to move call audio to the phone.
+  async hfpScoDisconnect(mac: string, timeoutMs = 15000): Promise<ActionResponse> {
+    return (await this.request(`hfp-sco-disconnect ${mac}`, timeoutMs)) as ActionResponse
+  }
+
   // Open a event subscription
   subscribe(
     onEvent: (ev: {

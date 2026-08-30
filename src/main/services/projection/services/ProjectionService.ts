@@ -2026,6 +2026,13 @@ export class ProjectionService {
       this.aaBtSock.hfpConnect(mac).catch((e) => console.warn(`[ProjectionService] hfpConnect failed`, e))
       return { ok: true }
     }
+    // [hub] Phase 6: disconnect HFP/SCO to move call audio to the phone.
+    if (key === 'hfpScoDisconnect') {
+      const mac = typeof args.mac === 'string' ? args.mac : ''
+      if (!mac) return { ok: false, error: 'hfpScoDisconnect requires a mac' }
+      this.aaBtSock.hfpScoDisconnect(mac).catch((e) => console.warn(`[ProjectionService] hfpScoDisconnect failed`, e))
+      return { ok: true }
+    }
     // companionAccept / companionDecline: the companion push path lands with its
     // transport (a push from hubd → companion, acted on via TelecomManager).
     return { ok: false, error: `command-not-wired:${key}` }

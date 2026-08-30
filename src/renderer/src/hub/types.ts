@@ -67,6 +67,10 @@ export interface HubRing {
   answerVia: 'projection' | 'hfp' | 'companion' | null
   canBringToHub: boolean
   queued: HubRingQueued[]
+  // [hub] Phase 6: in-call UI fields
+  activeAt?: number | null
+  muted?: boolean
+  audioRoute?: 'hub' | 'phone'
 }
 
 export interface HubState {
