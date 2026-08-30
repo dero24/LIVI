@@ -109,6 +109,9 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
         justifyContent: 'flex-start',
         gap: 'clamp(0.75rem, 2vh, 1.5rem)',
         padding: 'clamp(0.75rem, 2vw, 1.5rem)',
+        // [hub] Work-log 49: leave room at the bottom for the floating
+        // NowPlaying card (same card as the home screen).
+        paddingBottom: 'clamp(6rem, 18vh, 9rem)',
         backgroundColor: t.bg,
         transition: 'opacity 400ms cubic-bezier(0.4, 0, 0.2, 1)',
         pointerEvents: 'auto',
@@ -117,78 +120,9 @@ export function Landing({ phone, onTileTap, onFullApps, onForgetCalibration }: L
         height: '100%'
       }}
     >
-      {/* [hub] §12.6: person-colored header — makes it instantly clear whose
-          phone is active. The accent bar uses the person's colour, and the
-          name + avatar are the first thing the user sees. */}
-      <Box
-        sx={{
-          width: '100%',
-          maxWidth: '560px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.75rem',
-          padding: '0.5rem 0'
-        }}
-      >
-        {/* Person colour accent bar */}
-        <Box
-          sx={{
-            width: '4px',
-            height: 'clamp(2rem, 6vh, 3rem)',
-            borderRadius: '2px',
-            backgroundColor: personColor,
-            flexShrink: 0
-          }}
-        />
-        {/* Avatar (if available) or initials */}
-        {personAvatar ? (
-          <Box
-            component="img"
-            src={personAvatar}
-            sx={{
-              width: 'clamp(2rem, 6vh, 3rem)',
-              height: 'clamp(2rem, 6vh, 3rem)',
-              borderRadius: '50%',
-              objectFit: 'cover',
-              flexShrink: 0
-            }}
-          />
-        ) : (
-          <Box
-            sx={{
-              width: 'clamp(2rem, 6vh, 3rem)',
-              height: 'clamp(2rem, 6vh, 3rem)',
-              borderRadius: '50%',
-              backgroundColor: personColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              color: '#fff',
-              fontSize: 'clamp(1rem, 3vh, 1.5rem)',
-              fontWeight: 500
-            }}
-          >
-            {personName.charAt(0).toUpperCase()}
-          </Box>
-        )}
-        <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-          <Typography
-            sx={{
-              fontSize: 'clamp(1.1rem, 4vmin, 1.8rem)',
-              fontWeight: 500,
-              lineHeight: 1.2
-            }}
-          >
-            {personName}&apos;s Phone
-          </Typography>
-          {isPrimary && (
-            <Typography sx={{ fontSize: '0.75rem', color: t.textMuted }}>
-              Primary phone
-            </Typography>
-          )}
-        </Box>
-      </Box>
+      {/* [hub] Work-log 49: person header removed — the PresenceRow bubbles
+          in the bar already show who's docked. The header was redundant and
+          added visual clutter between the bar and the tile grid. */}
 
       {/* 2x2 tile grid */}
       <Box

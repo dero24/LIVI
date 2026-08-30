@@ -636,11 +636,10 @@ export function HubShell() {
       )}
 
       {/* [hub] Work-log 48: Full NowPlaying overlay — shown when the user taps
-          the ambient strip on the home screen. Full-screen with album art,
-          metadata, progress bar, and transport controls. Tap the backdrop or
-          press back to dismiss. Only shown in screensaver mode (not in
-          landing/AA mode — the compact bar already has controls there). */}
-      {viewMode === 'screensaver' && !ring && npExpanded && nowPlaying && (
+          the now-playing card on the home screen or landing page. Full-screen
+          with album art, metadata, progress bar, and transport controls. Tap
+          the backdrop or press back to dismiss. */}
+      {viewMode !== 'aa' && !ring && npExpanded && nowPlaying && (
         <Box
           className="hub-interactive"
           sx={{ position: 'absolute', inset: 0, zIndex: 1300, pointerEvents: 'auto' }}
@@ -682,15 +681,17 @@ export function HubShell() {
           Bar hidden during calibration so the full AA dashboard is visible
           through the CalibrationOverlay.
           [hub] Fix 1 (work-log 27): bar also hidden during a ring so the AA
-          video + native call UI show through behind the RingBanner. */}
+          video + native call UI show through behind the RingBanner.
+          [hub] Work-log 49: bar is now slim in landing mode (clock + bubbles
+          only, no minHeight, no NowPlaying). NowPlaying is a floating card in
+          the content area — same pattern as the home screen. In AA mode the
+          bar keeps minHeight + NowPlaying compact (AA video fills the content
+          area, no room for a floating card). */}
       {viewMode !== 'screensaver' && !calibrating && !ring && (
         <>
-          {/* [hub] §12.6: the bar is a view-area inset. It contains:
-              - Clock + date (top line, large)
-              - Presence row (phone bubbles)
-              - Now-playing placeholder (bottom line)
-              The bar's total height is measured and published as
-              projectionViewAreaTop so the phone lays out below it. */}
+          {/* [hub] §12.6: the bar is a view-area inset. In landing mode it's
+              slim (clock + bubbles). In AA mode it's taller (minHeight for AA
+              area shaping) and includes the compact NowPlaying strip. */}
           <Box
             ref={barRef}
             className="hub-interactive"
@@ -702,33 +703,20 @@ export function HubShell() {
               display: 'flex',
               flexDirection: 'column',
               gap: 'clamp(0.5rem, 1.5vh, 1rem)',
-              // [hub] Bar minHeight targets ~450px on a 1024px portrait panel
-              // (44vh = 450px). This leaves ~574px for AA — a nearly square
-              // 600×574 hole (AR ~1.04). In portrait AA, Google Maps is the
-              // "base layer" (top, largest area). A tall AA area gives Maps too
-              // much space and pushes app launcher / media to the disconnected
-              // bottom. A near-square area balances Maps and apps. The old
-              // project used projectionViewAreaTop: 450 (work-log 18, r3 config).
-              // This minHeight was removed in work-log 21 by mistake — restored
-              // now that the screen→projection scaling band-aid is gone.
-              minHeight: 'clamp(380px, 44vh, 480px)'
+              // [hub] minHeight only in AA mode — shapes the AA video area.
+              // In landing mode the bar is slim; tiles fill the space below.
+              ...(viewMode === 'aa' ? { minHeight: 'clamp(380px, 44vh, 480px)' } : {})
             }}
           >
             {/* Clock + date row */}
             <ClockRow />
             {/* Presence bubbles */}
             <PresenceRow phones={phones} onSelect={handleBubbleSelect} />
-            {/* [hub] §12.6: media transport — prev / play-pause / next.
-                Wired to window.projection.ipc.sendCommand, which maps through
-                CommandMapping → BUTTON_KEY.MEDIA_* in AaSession's SendCommand
-                handler (src/main/services/projection/driver/aa/AaSession.ts).
-                [hub] Phase 5 (work-log 44): compact NowPlaying strip (art
-                thumbnail + title/artist + transport). The old bare
-                MediaControls fallback was removed — it showed for ~5s before
-                media metadata arrived, creating a jarring transition. Now
-                nothing renders until media data is available, then the
-                compact NowPlaying fades in smoothly. */}
-            {anyProjecting && nowPlaying && (
+            {/* [hub] NowPlaying compact — only in AA mode (the AA video fills
+                the content area, so the bar is the only place for media
+                controls). In landing mode, NowPlaying is a floating card in
+                the content area (see below). */}
+            {viewMode === 'aa' && anyProjecting && nowPlaying && (
               <NowPlaying data={nowPlaying} variant="compact" phoneLabel={projectingPhoneName} />
             )}
           </Box>
@@ -762,6 +750,42 @@ export function HubShell() {
                 onFullApps={handleFullApps}
                 onForgetCalibration={handleForgetCalibration}
               />
+            )}
+
+            {/* [hub] Work-log 49: Floating NowPlaying card in landing mode —
+                same card style as the home screen. Tappable to expand to the
+                full NowPlaying overlay. Transport buttons work directly
+                (stopPropagation in NowPlaying.tsx prevents expand on button
+                taps). Only shown in landing mode (AA mode has the compact
+                strip in the bar). */}
+            {viewMode === 'landing' && anyProjecting && nowPlaying && (
+              <Box
+                data-testid="hub-landing-now-playing"
+                className="hub-interactive"
+                sx={{
+                  position: 'absolute',
+                  bottom: 'clamp(1rem, 3vh, 2rem)',
+                  left: 'clamp(0.75rem, 3vw, 1.5rem)',
+                  right: 'clamp(0.75rem, 3vw, 1.5rem)',
+                  padding: 'clamp(0.6rem, 2vh, 1rem) clamp(0.75rem, 2.5vw, 1.25rem)',
+                  borderRadius: 'clamp(12px, 2.5vw, 18px)',
+                  backgroundColor: t.surface,
+                  border: `1px solid ${t.border}`,
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
+                  cursor: 'pointer',
+                  pointerEvents: 'auto',
+                  transition: 'transform 100ms ease, box-shadow 160ms ease, background-color 160ms ease',
+                  '&:active': { transform: 'scale(0.98)' },
+                  '&:hover': { boxShadow: '0 6px 28px rgba(0,0,0,0.35)', backgroundColor: t.surfaceMuted }
+                }}
+                onClick={() => setNpExpanded(true)}
+                role="button"
+                tabIndex={0}
+                aria-label={`Now playing: ${nowPlaying.title || 'Unknown track'} by ${nowPlaying.artist || 'Unknown artist'}. Tap to expand.`}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setNpExpanded(true) }}
+              >
+                <NowPlaying data={nowPlaying} variant="compact" phoneLabel={projectingPhoneName} />
+              </Box>
             )}
 
             {/* Navigation pulse indicator */}
